@@ -1,6 +1,7 @@
 (() => {
   const MSG_SET = "SSC_SET_VOLUME";
   const MSG_RESOLVE = "SSC_RESOLVE_VOLUME";
+  const DEFAULT_PERCENT = 100;
 
   const proto = location.protocol;
   if (proto !== "http:" && proto !== "https:") {
@@ -18,26 +19,39 @@
   let masterGain = null;
   const attached = new WeakSet();
 
-  /** Last requested level (0–400); applied once AudioContext exists after user activation. */
-  let pendingPercent = 100;
+  /** Last requested level (0–400). Stored until BOTH user activation AND a non-default level apply. */
+  let pendingPercent = DEFAULT_PERCENT;
   let audioUnlocked = false;
 
-  function ensureGraph() {
-    if (ctx && masterGain) return;
-    ctx = new AudioContext({ latencyHint: "interactive" });
-    masterGain = ctx.createGain();
-    masterGain.gain.value = 1;
-    masterGain.connect(ctx.destination);
+  /** Do we actually need to intercept this page's audio right now? */
+  function shouldIntercept() {
+    return Number(pendingPercent) !== DEFAULT_PERCENT;
   }
 
-  function resumeIfNeeded() {
-    if (ctx && ctx.state === "suspended") {
-      ctx.resume().catch(() => {});
+  /**
+   * Build the AudioContext + master gain. Only legal once `audioUnlocked` is true
+   * (sticky activation). Idempotent. Does nothing on pages with default volume
+   * and no existing graph, so silent pages never construct a context.
+   */
+  function ensureGraph() {
+    if (ctx && masterGain) return;
+    if (!audioUnlocked) return;
+    try {
+      ctx = new AudioContext({ latencyHint: "interactive" });
+      masterGain = ctx.createGain();
+      masterGain.gain.value = 1;
+      masterGain.connect(ctx.destination);
+      if (ctx.state === "suspended") {
+        ctx.resume().catch(() => {});
+      }
+    } catch {
+      ctx = null;
+      masterGain = null;
     }
   }
 
   function applyGainFromPending() {
-    if (!ctx || !masterGain) return;
+    if (!masterGain) return;
     const g = Math.max(0, Math.min(4, Number(pendingPercent) / 100));
     masterGain.gain.value = g;
   }
@@ -47,19 +61,23 @@
    */
   function setVolumePercent(percent) {
     pendingPercent = Number(percent);
-    if (!audioUnlocked || !ctx || !masterGain) return;
+    if (!audioUnlocked) return;
+    if (!ctx && !shouldIntercept()) return;
+    ensureGraph();
+    if (!ctx) return;
     applyGainFromPending();
-    resumeIfNeeded();
+    scan(document);
   }
 
   function onFirstUserActivation() {
     if (audioUnlocked) return;
     audioUnlocked = true;
-    ensureGraph();
-    applyGainFromPending();
-    resumeIfNeeded();
-    scan(document);
-    for (const ev of ["pointerdown", "keydown", "touchstart"]) {
+    if (shouldIntercept()) {
+      ensureGraph();
+      applyGainFromPending();
+      scan(document);
+    }
+    for (const ev of ACTIVATION_EVENTS) {
       window.removeEventListener(ev, onFirstUserActivation, true);
     }
   }
@@ -71,7 +89,10 @@
     if (!(el instanceof HTMLMediaElement)) return;
     if (attached.has(el)) return;
     if (el.dataset.sscAttachFailed === "1") return;
-    if (!audioUnlocked || !ctx || !masterGain) return;
+    if (!audioUnlocked) return;
+    if (!ctx && !shouldIntercept()) return;
+    ensureGraph();
+    if (!ctx || !masterGain) return;
     try {
       const src = ctx.createMediaElementSource(el);
       src.connect(masterGain);
@@ -101,7 +122,7 @@
       { type: MSG_RESOLVE, origin: location.origin },
       (resp) => {
         void chrome.runtime?.lastError;
-        const v = typeof resp?.volume === "number" ? resp.volume : 100;
+        const v = typeof resp?.volume === "number" ? resp.volume : DEFAULT_PERCENT;
         setVolumePercent(v);
       }
     );
@@ -130,8 +151,11 @@
     pullResolvedVolume();
   });
 
-  for (const ev of ["pointerdown", "keydown", "touchstart"]) {
+  // Activation-triggering events per Chrome's user activation v2:
+  // pointerdown counts for mouse, pointerup also catches touch, keydown covers most keys.
+  // touchstart is intentionally omitted — it does NOT count as activation in modern Chrome.
+  const ACTIVATION_EVENTS = ["pointerdown", "pointerup", "keydown"];
+  for (const ev of ACTIVATION_EVENTS) {
     window.addEventListener(ev, onFirstUserActivation, { capture: true, passive: true });
   }
 })();
-
