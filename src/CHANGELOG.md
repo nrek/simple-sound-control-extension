@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-05-01
+
+### Changed
+
+- **SSC is now authoritative over page volume sliders in Tab Capture mode.** Previously the content script sat fully inert in passthrough; the page's `el.volume` (YouTube's player slider, Twitch's, Spotify Web's) silently pre-multiplied the captured stream feeding the offscreen gain — so a user-set 50% on YouTube while SSC was at 50% effectively gave 25%. The content script now pins `el.volume = 1` on every tracked element while passthrough is active so SSC's gain node is the sole attenuator. Result: SSC slider value === actual tab output, regardless of what the page's own volume UI is doing.
+- **Page-driven mute (`el.volume = 0`) is still respected** — explicit silence is treated as user intent and not overridden.
+- **Trade-off:** Meet's per-participant volume control (which works by writing `el.volume` on individual `<audio>` elements) becomes a no-op while Tab Capture mode is engaged. Use the SSC slider to control the tab as a whole; Meet's per-participant slider doesn't take effect during capture. Disable Tab Capture mode if you need the per-participant control back.
+
 ## [0.1.6] - 2026-05-01
 
 ### Fixed

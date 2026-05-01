@@ -114,7 +114,17 @@
    */
   function applyToElement(el) {
     if (!(el instanceof HTMLMediaElement)) return;
-    if (passthroughMode) return;
+    if (passthroughMode) {
+      // Tab Capture is active. The source tab is muted at the OS level and what
+      // the user actually hears is the captured stream multiplied by our
+      // offscreen GainNode. We force `el.volume = 1` so the page's own volume
+      // slider (YouTube's, Twitch's, anything that writes `el.volume`) can't
+      // pre-attenuate the captured stream and quietly fight against the SSC
+      // slider. Page-driven mute (`el.volume = 0`) is respected as an explicit
+      // user silence gesture.
+      if (el.volume !== 1 && el.volume !== 0) writeVolume(el, 1);
+      return;
+    }
     if (routed.has(el)) {
       if (el.volume !== 1) writeVolume(el, 1);
       return;
@@ -131,7 +141,20 @@
    */
   function enforceOnElement(el) {
     if (!(el instanceof HTMLMediaElement)) return;
-    if (passthroughMode) return;
+    if (passthroughMode) {
+      // See comment in `applyToElement`: in Tab Capture mode SSC owns the
+      // tab's level via the offscreen gain node, so any page-driven write
+      // that's neither unity nor an explicit mute gets reverted to unity.
+      if (el.volume === 0 || el.volume === 1) return;
+      const meta = enforceMeta.get(el);
+      if (meta) {
+        if (Math.abs(el.volume - meta.expectedVolume) <= 0.001) return;
+        const now = performance.now();
+        if (now - meta.lastEnforceAt < ENFORCE_THROTTLE_MS) return;
+      }
+      writeVolume(el, 1);
+      return;
+    }
     if (Number(pendingPercent) === DEFAULT_PERCENT && !routed.has(el)) return;
 
     const desired = desiredVolumeFor(el);
@@ -300,8 +323,13 @@
       const next = Boolean(msg.enabled);
       const wasOn = passthroughMode;
       passthroughMode = next;
-      if (wasOn && !next) {
-        // Capture released. Pull the resolved level and re-apply via el.volume.
+      if (next && !wasOn) {
+        // Capture engaged. Pin every tracked element's `el.volume` to unity so
+        // the captured stream feeds our offscreen gain at full intensity.
+        applyToAll();
+      } else if (wasOn && !next) {
+        // Capture released. Re-resolve the desired level and apply via
+        // `el.volume` (we're now back in content-script mode).
         pullResolvedVolume();
       }
       sendResponse({ ok: true, passthroughMode });
