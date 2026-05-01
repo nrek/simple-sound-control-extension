@@ -48,12 +48,13 @@ Icons `icon-16.png` … `icon-128.png` live in **`src/`** and are copied into ea
 | Permission | Purpose |
 |------------|---------|
 | `storage` | Save preferences, per-tab/per-origin volumes, live tab boost map, etc. |
-| `tabs` | Resolve the active tab when sending volume updates from the popup. |
-| `host_permissions` `http://*/*`, `https://*/*` | Inject the content script on normal web pages (the broadcast `tabs.sendMessage` covers all frames in the active tab). |
+| `tabs` | Resolve the active tab when sending volume updates from the popup; read `tab.url` / `tab.title` for saved lists; mute the source tab during Tab Capture. |
+| *(no `host_permissions`)* | Broad reach comes from **`content_scripts.matches`** (`http://*/*`, `https://*/*`) so the volume helper runs on pages you visit. No cross-origin network access from the extension. |
+| `tabCapture`, `offscreen` *(optional, Chrome only)* | Requested only when you enable **Tab Capture mode** in Settings. |
 
 ## How it works (short)
 
-A **content script** attaches to `<audio>` / `<video>` elements and routes audio through a **Web Audio `GainNode`**. The **popup** and **service worker** coordinate level changes, persistence, and the toolbar icon.
+A **content script** attaches to `<audio>` / `<video>` elements and adjusts volume (and, above 100%, can route through a **Web Audio `GainNode`** for boost). The **popup** and **service worker** coordinate level changes, persistence, and the toolbar icon.
 
 This does **not** work on restricted pages (e.g. browser internal URLs, extension stores, PDF viewer, or pages without standard media). Very high gain can **clip or distort**—use your judgment.
 
