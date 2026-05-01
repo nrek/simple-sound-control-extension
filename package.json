@@ -4,9 +4,14 @@
   "version": "0.1.2",
   "description": "Per-tab volume boost (Chrome + Firefox MV3); shared src, dist outputs",
   "scripts": {
-    "build": "node scripts/build.mjs"
+    "build": "node scripts/build.mjs",
+    "build:unpacked": "node scripts/build.mjs --no-package",
+    "package": "node scripts/build.mjs"
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "archiver": "^7.0.1"
   }
 }

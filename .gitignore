@@ -16,6 +16,7 @@ desktop.ini
 
 # Build / release artifacts (keep source only in git)
 *.zip
+*.xpi
 *.crx
 *.pem
 
