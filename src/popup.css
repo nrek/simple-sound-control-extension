@@ -398,8 +398,7 @@ body {
   box-shadow: var(--md-elevation-1);
 }
 
-html[data-accent="purple"] .accent-swatch[data-accent="purple"],
-html:not([data-accent]) .accent-swatch[data-accent="purple"] {
+.accent-swatch[data-accent="purple"] {
   background: #6750a4;
 }
 
