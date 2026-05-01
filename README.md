@@ -49,7 +49,7 @@ Icons `icon-16.png` … `icon-128.png` live in **`src/`** and are copied into ea
 |------------|---------|
 | `storage` | Save preferences, per-tab/per-origin volumes, live tab boost map, etc. |
 | `tabs` | Resolve the active tab when sending volume updates from the popup; read `tab.url` / `tab.title` for saved lists; mute the source tab during Tab Capture. |
-| *(no `host_permissions`)* | Broad reach comes from **`content_scripts.matches`** (`http://*/*`, `https://*/*`) so the volume helper runs on pages you visit. No cross-origin network access from the extension. |
+| `host_permissions` `http://*/*`, `https://*/*` | Required so the content script reliably reaches `<audio>` / `<video>` on **any** site you open (without it, Chrome moves the extension into a restricted site-access mode and silently fails to deliver volume changes on a chunk of real sites — Reddit observed in the wild). No cross-origin network access from the extension. |
 | `tabCapture`, `offscreen` *(optional, Chrome only)* | Requested only when you enable **Tab Capture mode** in Settings. |
 
 ## How it works (short)

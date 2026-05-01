@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-05-01
+
+### Fixed
+
+- **Restored `host_permissions: ["http://*/*", "https://*/*"]`** on both Chrome and Firefox manifests. Reverts the removal in 0.1.10. The audit was right that no single code path strictly *required* host_permissions, but Chrome's actual install-time behavior without them is "site access restricted by default" — content scripts declared via `content_scripts.matches` get downgraded to a state where `chrome.tabs.sendMessage` returns "Receiving end does not exist" on many sites the user visits (Reddit observed in the wild), and `tab.url` from `chrome.tabs.query` can come back `undefined` for tabs the extension doesn't have host access to. The practical outcome of removing them was "extension silently broken on a chunk of real sites with no surfaced UX," not "same behavior with a cleaner permissions list." Trade-off restored: broad `host_permissions` triggers the Chrome Web Store in-depth review category but the extension actually works on the sites users open.
+
 ## [0.1.11] - 2026-05-01
 
 ### Fixed (Firefox AMO submission warnings)

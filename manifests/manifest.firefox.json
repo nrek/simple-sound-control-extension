@@ -29,6 +29,7 @@
     }
   },
   "permissions": ["storage", "tabs"],
+  "host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "scripts": ["background.js"]
   },
