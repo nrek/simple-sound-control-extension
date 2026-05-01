@@ -7,40 +7,58 @@ const root = path.resolve(__dirname, "..");
 const srcDir = path.join(root, "src");
 const distDir = path.join(root, "dist");
 const manifestsDir = path.join(root, "manifests");
+const pkgPath = path.join(root, "package.json");
 
 const targets = [
   { subdir: "chrome", template: "manifest.chrome.json" },
   { subdir: "firefox", template: "manifest.firefox.json" },
 ];
 
-async function copyDirRecursive(from, to) {
-  await fs.mkdir(to, { recursive: true });
-  const entries = await fs.readdir(from, { withFileTypes: true });
-  for (const ent of entries) {
-    const srcPath = path.join(from, ent.name);
-    const destPath = path.join(to, ent.name);
-    if (ent.isDirectory()) {
-      await copyDirRecursive(srcPath, destPath);
-    } else {
-      await fs.copyFile(srcPath, destPath);
-    }
+async function readJson(p) {
+  return JSON.parse(await fs.readFile(p, "utf8"));
+}
+
+async function exists(p) {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
   }
 }
 
 async function build() {
+  if (await exists(path.join(srcDir, "manifest.json"))) {
+    throw new Error(
+      "src/manifest.json must not exist — manifests live in manifests/ and are written into dist/<browser>/manifest.json by this script."
+    );
+  }
+
+  const pkg = await readJson(pkgPath);
+  const version = typeof pkg.version === "string" ? pkg.version : "0.0.0";
+
   await fs.rm(distDir, { recursive: true, force: true });
 
   for (const { subdir, template } of targets) {
     const out = path.join(distDir, subdir);
-    await copyDirRecursive(srcDir, out);
-    const manifestPath = path.join(manifestsDir, template);
-    const raw = await fs.readFile(manifestPath, "utf8");
-    const manifest = JSON.parse(raw);
+    await fs.cp(srcDir, out, { recursive: true });
+
+    const templatePath = path.join(manifestsDir, template);
+    const manifest = await readJson(templatePath);
+    if (manifest.version && manifest.version !== version) {
+      console.warn(
+        `[build] ${template} version ${manifest.version} overridden by package.json ${version}`
+      );
+    }
+    manifest.version = version;
+
     const outManifest = path.join(out, "manifest.json");
     await fs.writeFile(outManifest, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   }
 
-  console.log("Built dist/chrome and dist/firefox from src/ + manifests/");
+  console.log(
+    `Built dist/chrome and dist/firefox from src/ + manifests/ (version ${version} from package.json)`
+  );
 }
 
 build().catch((err) => {

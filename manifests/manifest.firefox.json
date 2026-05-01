@@ -25,7 +25,7 @@
       "128": "icon-128.png"
     }
   },
-  "permissions": ["storage", "tabs", "webNavigation"],
+  "permissions": ["storage", "tabs"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js"
@@ -39,6 +39,6 @@
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; style-src 'self' https://cdnjs.cloudflare.com; font-src https://cdnjs.cloudflare.com"
+    "extension_pages": "script-src 'self'; object-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'"
   }
 }

@@ -312,6 +312,18 @@ body {
   outline-offset: 2px;
 }
 
+.icon-svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+  display: block;
+}
+
+.saved-delete .icon-svg {
+  width: 18px;
+  height: 18px;
+}
+
 .settings-heading {
   margin: 0 0 10px;
   font-size: 0.75rem;

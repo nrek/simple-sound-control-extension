@@ -49,8 +49,7 @@ Icons `icon-16.png` … `icon-128.png` live in **`src/`** and are copied into ea
 |------------|---------|
 | `storage` | Save preferences, per-tab/per-origin volumes, live tab boost map, etc. |
 | `tabs` | Resolve the active tab when sending volume updates from the popup. |
-| `webNavigation` | Enumerate frames so embedded players (iframes) receive the same level. |
-| `host_permissions` `http://*/*`, `https://*/*` | Inject the content script on normal web pages. |
+| `host_permissions` `http://*/*`, `https://*/*` | Inject the content script on normal web pages (the broadcast `tabs.sendMessage` covers all frames in the active tab). |
 
 ## How it works (short)
 

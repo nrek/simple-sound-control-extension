@@ -243,6 +243,9 @@
 
   /**
    * Push gain to the current tab’s content script(s) on http/https.
+   * `chrome.tabs.sendMessage(tabId, payload)` (no `frameId`) broadcasts to all
+   * frames in the tab since Chrome 75 and Firefox 50, so per-frame enumeration
+   * is unnecessary and `webNavigation` is not required.
    * @param {number} percent
    */
   async function pushVolumeToActiveTab(percent) {
@@ -251,25 +254,7 @@
       const tabId = tabs[0]?.id;
       if (tabId === undefined) return;
       const payload = { type: CONTENT_MSG_VOLUME, percent: Number(percent) };
-
-      let frames = null;
-      try {
-        frames = await chrome.webNavigation.getAllFrames({ tabId });
-      } catch {
-        frames = null;
-      }
-
-      if (frames?.length) {
-        await Promise.allSettled(
-          frames.map((f) => {
-            const fid = f.frameId;
-            if (typeof fid !== "number") return Promise.resolve();
-            return chrome.tabs.sendMessage(tabId, payload, { frameId: fid }).catch(() => {});
-          })
-        );
-      } else {
-        await chrome.tabs.sendMessage(tabId, payload).catch(() => {});
-      }
+      await chrome.tabs.sendMessage(tabId, payload).catch(() => {});
     } catch {
       /* No receiver */
     }
@@ -330,7 +315,9 @@
       del.dataset.deleteType = type;
       del.dataset.deleteId = item.id;
       del.innerHTML =
-        '<i class="fa-solid fa-trash" aria-hidden="true"></i><span class="visually-hidden">Delete</span>';
+        '<svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
+        '<path d="M9 3v1H4v2h1v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6h1V4h-5V3H9zm0 5h2v9H9V8zm4 0h2v9h-2V8z"/>' +
+        '</svg><span class="visually-hidden">Delete</span>';
 
       li.append(main, del);
       ul.append(li);

@@ -284,19 +284,73 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   pruneClosedTab(tabId);
 });
 
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.local.get([STORAGE_KEY_TABS], (result) => {
-    if (chrome.runtime.lastError) return;
-    const { list, changed } = normalizeTabEntries(result[STORAGE_KEY_TABS]);
-    if (changed) {
-      chrome.storage.local.set({ [STORAGE_KEY_TABS]: list });
+/**
+ * Drops saved-tab + live-volume rows whose tabIds don't exist in the current
+ * window session. Tab IDs aren't stable across browser restarts, so without
+ * this every restart leaves dead rows in the Saved Tabs list.
+ */
+function reconcileSavedTabsWithOpenWindows(done) {
+  chrome.tabs.query({}, (openTabs) => {
+    if (chrome.runtime.lastError) {
+      done?.();
+      return;
     }
-    scheduleToolbarRefresh();
+    const live = new Set(
+      (Array.isArray(openTabs) ? openTabs : [])
+        .map((t) => Number(t?.id))
+        .filter((n) => !Number.isNaN(n))
+    );
+
+    chrome.storage.local.get([STORAGE_KEY_TABS, STORAGE_KEY_LIVE], (result) => {
+      if (chrome.runtime.lastError) {
+        done?.();
+        return;
+      }
+      const { list: normalized, changed: didNormalize } = normalizeTabEntries(
+        result[STORAGE_KEY_TABS]
+      );
+      const filteredTabs = normalized.filter((row) => {
+        if (row == null || typeof row !== "object") return true;
+        const tid = Number(row.tabId);
+        if (Number.isNaN(tid)) return true;
+        return live.has(tid);
+      });
+      const tabsChanged = didNormalize || filteredTabs.length !== normalized.length;
+
+      const prevLive = result[STORAGE_KEY_LIVE];
+      const liveMap =
+        prevLive !== null && typeof prevLive === "object" && !Array.isArray(prevLive)
+          ? { ...prevLive }
+          : {};
+      let liveChanged = false;
+      for (const key of Object.keys(liveMap)) {
+        if (!live.has(Number(key))) {
+          delete liveMap[key];
+          liveChanged = true;
+        }
+      }
+
+      const updates = {};
+      if (tabsChanged) updates[STORAGE_KEY_TABS] = filteredTabs;
+      if (liveChanged) updates[STORAGE_KEY_LIVE] = liveMap;
+      if (Object.keys(updates).length === 0) {
+        done?.();
+        return;
+      }
+      chrome.storage.local.set(updates, () => {
+        void chrome.runtime?.lastError;
+        done?.();
+      });
+    });
   });
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  reconcileSavedTabsWithOpenWindows(() => scheduleToolbarRefresh());
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  scheduleToolbarRefresh();
+  reconcileSavedTabsWithOpenWindows(() => scheduleToolbarRefresh());
 });
 
 chrome.tabs.onActivated.addListener(() => {
