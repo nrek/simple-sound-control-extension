@@ -30,6 +30,41 @@ const OFFSCREEN_JUSTIFICATION =
  */
 const capturedTabs = new Map();
 
+/**
+ * Last known origin per tab. Lets `tabs.onUpdated` distinguish a real
+ * cross-origin navigation (which should reset per-tab state) from an
+ * in-app SPA route change (Google Meet's `pushState`, YouTube's history
+ * navigation, etc., which should NOT reset state).
+ *
+ * @type {Map<number, string>}
+ */
+const lastOriginByTab = new Map();
+
+function originOfUrl(url) {
+  if (typeof url !== "string" || url === "") return "";
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "";
+  }
+}
+
+/** Seed `lastOriginByTab` from currently open tabs at SW startup/install. */
+function seedLastOrigins(done) {
+  chrome.tabs.query({}, (tabs) => {
+    if (chrome.runtime.lastError) {
+      done?.();
+      return;
+    }
+    for (const t of Array.isArray(tabs) ? tabs : []) {
+      if (t && t.id != null && typeof t.url === "string") {
+        lastOriginByTab.set(Number(t.id), originOfUrl(t.url));
+      }
+    }
+    done?.();
+  });
+}
+
 /** Serialize concurrent offscreen-document creation attempts. */
 let offscreenCreatingPromise = null;
 
@@ -308,6 +343,7 @@ function pruneClosedTab(tabId) {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   pruneClosedTab(tabId);
+  lastOriginByTab.delete(Number(tabId));
   // The tab is gone, so no source-tab unmute needed; just clear our state and
   // the offscreen chain.
   if (capturedTabs.has(Number(tabId))) {
@@ -530,15 +566,6 @@ async function releaseAllCaptures() {
   return { ok: true, released: ids.length };
 }
 
-// On URL change in a tab, any existing capture targets a stale stream id.
-// Tear it down so the popup can re-engage on the new page if needed.
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (typeof changeInfo.url !== "string") return;
-  if (capturedTabs.has(Number(tabId))) {
-    void releaseCapture(tabId);
-  }
-});
-
 // If the user disables Tab Capture mode globally via storage, drop everything.
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
@@ -611,11 +638,15 @@ function reconcileSavedTabsWithOpenWindows(done) {
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  reconcileSavedTabsWithOpenWindows(() => scheduleToolbarRefresh());
+  seedLastOrigins(() => {
+    reconcileSavedTabsWithOpenWindows(() => scheduleToolbarRefresh());
+  });
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  reconcileSavedTabsWithOpenWindows(() => scheduleToolbarRefresh());
+  seedLastOrigins(() => {
+    reconcileSavedTabsWithOpenWindows(() => scheduleToolbarRefresh());
+  });
 });
 
 chrome.tabs.onActivated.addListener(() => {
@@ -624,7 +655,26 @@ chrome.tabs.onActivated.addListener(() => {
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (typeof changeInfo.url === "string") {
-    removeLiveVolumeForTab(tabId, () => scheduleToolbarRefresh());
+    const newOrigin = originOfUrl(changeInfo.url);
+    const prevOrigin = lastOriginByTab.get(Number(tabId)) || "";
+    lastOriginByTab.set(Number(tabId), newOrigin);
+
+    // SPA route changes (Google Meet pushState, YouTube watch-page transitions,
+    // any history.pushState within the same site) fire `tabs.onUpdated` with
+    // `changeInfo.url` even though no real navigation occurred. Treating them
+    // as navigation wipes the user's per-tab volume and tears down any active
+    // Tab Capture chain — that's what was causing volume to "auto-correct" back
+    // to 100% on Meet after ~60s. Only react when the origin actually changed.
+    const isCrossOrigin = prevOrigin !== "" && prevOrigin !== newOrigin;
+    if (isCrossOrigin) {
+      removeLiveVolumeForTab(tabId, () => scheduleToolbarRefresh());
+      if (capturedTabs.has(Number(tabId))) {
+        void releaseCapture(tabId);
+      }
+    } else {
+      // Same-origin URL update: keep state intact, just nudge the toolbar.
+      scheduleToolbarRefresh();
+    }
     return;
   }
   if (changeInfo.status === "complete") {

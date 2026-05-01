@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-05-01
+
+### Fixed
+
+- **Tab Capture mode "auto-correcting" Google Meet (and any SPA) back to 100% after ~60 s.** Background's `tabs.onUpdated` listener was treating every URL change as a real navigation — including SPA `history.pushState` calls that Meet, YouTube, Slack, GitHub, etc. fire several times per minute as users move through their UIs. Each one cleared the tab's live volume override AND released the active Tab Capture chain (which unmuted the source tab, hence the jump back to 100%).
+- The listener now compares the new URL's **origin** against the last known origin per tab (`lastOriginByTab`):
+  - **Same-origin URL update** (SPA route change, hash update, query-param change within the same site) → keep state intact, just refresh the toolbar.
+  - **Cross-origin** (real navigation away from the site) → clear the per-tab live override and release any active capture, as before.
+- `lastOriginByTab` is seeded from existing tabs at `runtime.onStartup` / `runtime.onInstalled`, kept current as URL changes arrive, and pruned on tab close. First navigation in any tab without a stored origin is treated as same-origin (conservative — never resets state speculatively).
+
 ## [0.1.5] - 2026-05-01
 
 ### Changed
