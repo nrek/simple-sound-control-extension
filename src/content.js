@@ -2,11 +2,25 @@
   const MSG_SET = "SSC_SET_VOLUME";
   const MSG_RESOLVE = "SSC_RESOLVE_VOLUME";
 
+  const proto = location.protocol;
+  if (proto !== "http:" && proto !== "https:") {
+    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+      if (msg?.type !== MSG_SET) return false;
+      sendResponse({ ok: true, noop: true });
+      return true;
+    });
+    return;
+  }
+
   /** @type {AudioContext | null} */
   let ctx = null;
   /** @type {GainNode | null} */
   let masterGain = null;
   const attached = new WeakSet();
+
+  /** Last requested level (0–400); applied once AudioContext exists after user activation. */
+  let pendingPercent = 100;
+  let audioUnlocked = false;
 
   function ensureGraph() {
     if (ctx && masterGain) return;
@@ -22,14 +36,32 @@
     }
   }
 
+  function applyGainFromPending() {
+    if (!ctx || !masterGain) return;
+    const g = Math.max(0, Math.min(4, Number(pendingPercent) / 100));
+    masterGain.gain.value = g;
+  }
+
   /**
    * @param {number} percent UI 0–400 (100 = unity gain)
    */
   function setVolumePercent(percent) {
-    ensureGraph();
-    const g = Math.max(0, Math.min(4, Number(percent) / 100));
-    masterGain.gain.value = g;
+    pendingPercent = Number(percent);
+    if (!audioUnlocked || !ctx || !masterGain) return;
+    applyGainFromPending();
     resumeIfNeeded();
+  }
+
+  function onFirstUserActivation() {
+    if (audioUnlocked) return;
+    audioUnlocked = true;
+    ensureGraph();
+    applyGainFromPending();
+    resumeIfNeeded();
+    scan(document);
+    for (const ev of ["pointerdown", "keydown", "touchstart"]) {
+      window.removeEventListener(ev, onFirstUserActivation, true);
+    }
   }
 
   /**
@@ -39,11 +71,12 @@
     if (!(el instanceof HTMLMediaElement)) return;
     if (attached.has(el)) return;
     if (el.dataset.sscAttachFailed === "1") return;
+    if (!audioUnlocked || !ctx || !masterGain) return;
     try {
-      ensureGraph();
       const src = ctx.createMediaElementSource(el);
       src.connect(masterGain);
       attached.add(el);
+      applyGainFromPending();
     } catch {
       el.dataset.sscAttachFailed = "1";
     }
@@ -81,8 +114,6 @@
     return true;
   });
 
-  ensureGraph();
-  scan(document);
   mo.observe(document.documentElement, { childList: true, subtree: true });
 
   pullResolvedVolume();
@@ -99,13 +130,8 @@
     pullResolvedVolume();
   });
 
-  for (const ev of ["click", "keydown", "touchstart"]) {
-    window.addEventListener(
-      ev,
-      () => {
-        resumeIfNeeded();
-      },
-      { capture: true, passive: true }
-    );
+  for (const ev of ["pointerdown", "keydown", "touchstart"]) {
+    window.addEventListener(ev, onFirstUserActivation, { capture: true, passive: true });
   }
 })();
+

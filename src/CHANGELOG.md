@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Web Audio / autoplay policy:** `AudioContext` is no longer created at `document_idle`. The graph is created on the first **user gesture** (`pointerdown`, `keydown`, or `touchstart`) on the page, then `resume()` runs in that context—avoids console warnings and failed resumes on non-audio pages (e.g. `chrome://newtab/` if the script ever runs there). Non-`http:`/`https:` pages no-op with a minimal message listener.
+
 ### Added
 
 - Settings **Theme**: **Dark** / **Light** toggle (default Dark). Light uses near-white `#efefef` surface with dark text and light-theme accent tokens; preference stored as **`ssc_theme`**.
