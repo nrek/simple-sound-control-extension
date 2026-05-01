@@ -64,7 +64,6 @@
   const emptyUrls = document.getElementById("saved-empty-urls");
   const tabCaptureToggle = document.getElementById("tab-capture-toggle");
   const tabCaptureSection = document.getElementById("tab-capture-section");
-  const tabCaptureHint = document.getElementById("tab-capture-hint");
 
   let suppressQuickPresetClear = false;
   /** Whether Tab Capture is currently engaged for the active tab in this popup session. */
@@ -528,19 +527,19 @@
     storageSet({ [STORAGE_KEYS.saveToUrl]: saveToUrl.checked });
   });
 
-  function setTabCaptureUnavailable(reason) {
-    if (!tabCaptureToggle || !tabCaptureSection) return;
-    tabCaptureToggle.checked = false;
-    tabCaptureToggle.disabled = true;
-    const row = tabCaptureSection.querySelector(".switch-row");
-    if (row) row.classList.add("is-disabled");
-    if (tabCaptureHint && reason) tabCaptureHint.textContent = reason;
+  function hideTabCaptureSection() {
+    if (!tabCaptureSection) return;
+    tabCaptureSection.hidden = true;
+    if (tabCaptureToggle) {
+      tabCaptureToggle.checked = false;
+      tabCaptureToggle.disabled = true;
+    }
   }
 
   if (!HAS_TAB_CAPTURE) {
-    setTabCaptureUnavailable(
-      "Tab Capture mode requires Chrome's tabCapture API and is not available in this browser."
-    );
+    // No `chrome.tabCapture` (Firefox, or Chrome before MV3 offscreen support).
+    // Hide the whole settings block — there's nothing actionable for the user.
+    hideTabCaptureSection();
   } else if (tabCaptureToggle) {
     tabCaptureToggle.addEventListener("change", async () => {
       const wantOn = Boolean(tabCaptureToggle.checked);

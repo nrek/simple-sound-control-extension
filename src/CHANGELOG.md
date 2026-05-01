@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-05-01
+
+### Changed
+
+- **Tab Capture mode is hidden in Firefox** (and any other browser without `chrome.tabCapture`) instead of rendering as a disabled control with explanatory copy. Users on browsers where the feature isn't actionable shouldn't see it at all.
+
 ## [0.1.4] - 2026-05-01
 
 ### Added
