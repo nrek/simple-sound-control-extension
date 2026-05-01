@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-05-01
+
+### Added
+
+- **Tab Capture mode (Chrome only, opt-in).** New top-of-Settings toggle that routes the entire active tab's audio through the extension instead of fighting individual `<audio>` / `<video>` elements. When engaged:
+  - The popup calls `chrome.tabCapture.getMediaStreamId({ targetTabId })` from a user-gesture context (slider drag, chip click, toggle change, popup open) and hands the stream id off to the background service worker.
+  - An MV3 **offscreen document** (`offscreen.html` / `offscreen.js`) hosts a single `AudioContext`; each captured tab gets its own `MediaStreamSource → GainNode → destination` chain. Per-tab gain is updated live as the slider moves.
+  - The source tab is muted via `chrome.tabs.update({ muted: true })` to prevent double-playback. The pre-capture mute state is snapshotted and restored on release so a manual user mute is preserved.
+  - Background broadcasts `SSC_PASSTHROUGH_MODE` to the content script of any captured tab, which then stops touching `el.volume` entirely — no more fights with Meet's auto-resets, because the extension owns the entire audio path downstream of the page.
+  - Capture is released automatically when: the slider returns to 100%, the tab navigates to a new URL, the tab closes, or the user disables the global toggle (which also tears down every active capture).
+- **`tabCapture` and `offscreen` are declared as `optional_permissions`** in the Chrome manifest so install-time permissions are unchanged. The toggle in Settings is the consent surface — Chrome shows the standard "this extension can capture the contents of your tabs" prompt the first time the user enables it. Firefox doesn't ship the `tabCapture` API; the toggle there auto-disables with explanatory copy.
+- **Persistent preference** stored as `ssc_tab_capture_enabled`. Popup re-checks `chrome.permissions.contains` on every open and self-corrects if the user revoked the permission via `chrome://extensions` between sessions.
+
 ## [0.1.3] - 2026-05-01
 
 ### Fixed

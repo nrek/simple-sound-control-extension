@@ -1,6 +1,7 @@
 (() => {
   const MSG_SET = "SSC_SET_VOLUME";
   const MSG_RESOLVE = "SSC_RESOLVE_VOLUME";
+  const MSG_PASSTHROUGH = "SSC_PASSTHROUGH_MODE";
   const DEFAULT_PERCENT = 100;
   /**
    * Floor in milliseconds between successive page-driven volume corrections we'll
@@ -48,6 +49,14 @@
 
   let pendingPercent = DEFAULT_PERCENT;
   let audioUnlocked = false;
+  /**
+   * When true, the background service worker is routing this tab's audio
+   * through an offscreen `tabCapture` chain. The source tab is muted at the
+   * tab level, so `el.volume` writes from us do nothing useful and just pick
+   * fights with the page (e.g. Meet auto-resets). Stay out of the way until
+   * the background tells us to resume.
+   */
+  let passthroughMode = false;
 
   /** Boost is the only situation that requires a Web Audio graph. */
   function isBoost() {
@@ -105,6 +114,7 @@
    */
   function applyToElement(el) {
     if (!(el instanceof HTMLMediaElement)) return;
+    if (passthroughMode) return;
     if (routed.has(el)) {
       if (el.volume !== 1) writeVolume(el, 1);
       return;
@@ -121,6 +131,7 @@
    */
   function enforceOnElement(el) {
     if (!(el instanceof HTMLMediaElement)) return;
+    if (passthroughMode) return;
     if (Number(pendingPercent) === DEFAULT_PERCENT && !routed.has(el)) return;
 
     const desired = desiredVolumeFor(el);
@@ -280,10 +291,23 @@
   }
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    if (msg?.type !== MSG_SET) return false;
-    setVolumePercent(msg.percent);
-    sendResponse({ ok: true });
-    return true;
+    if (msg?.type === MSG_SET) {
+      setVolumePercent(msg.percent);
+      sendResponse({ ok: true });
+      return true;
+    }
+    if (msg?.type === MSG_PASSTHROUGH) {
+      const next = Boolean(msg.enabled);
+      const wasOn = passthroughMode;
+      passthroughMode = next;
+      if (wasOn && !next) {
+        // Capture released. Pull the resolved level and re-apply via el.volume.
+        pullResolvedVolume();
+      }
+      sendResponse({ ok: true, passthroughMode });
+      return true;
+    }
+    return false;
   });
 
   mo.observe(document.documentElement, { childList: true, subtree: true });

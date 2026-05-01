@@ -8,7 +8,16 @@
     savedTabVolumes: "ssc_saved_tab_volumes",
     savedUrlVolumes: "ssc_saved_url_volumes",
     liveTabVolume: "ssc_live_tab_volume",
+    tabCaptureEnabled: "ssc_tab_capture_enabled",
   };
+
+  /** Tab Capture API + the `permissions` API are both Chrome-only. */
+  const HAS_TAB_CAPTURE =
+    typeof chrome !== "undefined" &&
+    Boolean(chrome.tabCapture?.getMediaStreamId) &&
+    Boolean(chrome.permissions?.request);
+
+  const TAB_CAPTURE_PERMISSIONS = { permissions: ["tabCapture", "offscreen"] };
 
   const ACCENTS = new Set([
     "purple",
@@ -29,6 +38,11 @@
   const CONTENT_MSG_VOLUME = "SSC_SET_VOLUME";
   const MSG_RESOLVE_TAB = "SSC_RESOLVE_VOLUME_FOR_TAB";
   const MSG_REFRESH_TOOLBAR = "SSC_REFRESH_TOOLBAR";
+  const MSG_TAB_CAPTURE_ENGAGE = "SSC_TAB_CAPTURE_ENGAGE";
+  const MSG_TAB_CAPTURE_GAIN = "SSC_TAB_CAPTURE_GAIN";
+  const MSG_TAB_CAPTURE_RELEASE = "SSC_TAB_CAPTURE_RELEASE";
+  const MSG_TAB_CAPTURE_RELEASE_ALL = "SSC_TAB_CAPTURE_RELEASE_ALL";
+  const MSG_TAB_CAPTURE_QUERY = "SSC_TAB_CAPTURE_QUERY";
 
   const screenMain = document.getElementById("screen-main");
   const screenSettings = document.getElementById("screen-settings");
@@ -48,8 +62,17 @@
   const listUrls = document.getElementById("saved-list-urls");
   const emptyTabs = document.getElementById("saved-empty-tabs");
   const emptyUrls = document.getElementById("saved-empty-urls");
+  const tabCaptureToggle = document.getElementById("tab-capture-toggle");
+  const tabCaptureSection = document.getElementById("tab-capture-section");
+  const tabCaptureHint = document.getElementById("tab-capture-hint");
 
   let suppressQuickPresetClear = false;
+  /** Whether Tab Capture is currently engaged for the active tab in this popup session. */
+  let activeTabCaptured = false;
+  /** Resolved at init: { id, url, isHttpx } for the active tab, or null on chrome:// pages. */
+  let activeTabInfo = null;
+  /** Mirror of `ssc_tab_capture_enabled` for cheap synchronous reads in event handlers. */
+  let tabCaptureEnabled = false;
 
   function storageGet(keys) {
     return new Promise((resolve) => {
@@ -241,6 +264,95 @@
     }
   }
 
+  /* --------------------------- Tab Capture helpers --------------------------- */
+
+  function isHttpxUrl(url) {
+    return typeof url === "string" && /^https?:\/\//i.test(url);
+  }
+
+  async function bgSend(payload) {
+    try {
+      return await chrome.runtime.sendMessage(payload);
+    } catch {
+      return null;
+    }
+  }
+
+  async function queryActiveTabCaptured(tabId) {
+    if (!HAS_TAB_CAPTURE || tabId == null) return false;
+    const r = await bgSend({ type: MSG_TAB_CAPTURE_QUERY, tabId });
+    return Boolean(r?.captured);
+  }
+
+  /**
+   * Engage or update Tab Capture for the active tab. Must be invoked from a
+   * user-gesture context (slider input, chip click, toggle change, popup open
+   * from action click) so that `getMediaStreamId` is permitted.
+   *
+   * Idempotent: if the tab is already captured we just push the new gain.
+   *
+   * @param {number} tabId
+   * @param {number} percent
+   * @returns {Promise<boolean>} true on success
+   */
+  async function engageOrUpdateCapture(tabId, percent) {
+    if (!HAS_TAB_CAPTURE || tabId == null) return false;
+    if (activeTabCaptured) {
+      const r = await bgSend({ type: MSG_TAB_CAPTURE_GAIN, tabId, percent });
+      return Boolean(r?.ok);
+    }
+    let streamId;
+    try {
+      streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
+    } catch {
+      return false;
+    }
+    if (!streamId) return false;
+    const r = await bgSend({
+      type: MSG_TAB_CAPTURE_ENGAGE,
+      tabId,
+      streamId,
+      percent,
+    });
+    if (r?.ok) {
+      activeTabCaptured = true;
+      return true;
+    }
+    return false;
+  }
+
+  async function releaseActiveTabCapture(tabId) {
+    if (!HAS_TAB_CAPTURE || tabId == null) return;
+    if (!activeTabCaptured) return;
+    await bgSend({ type: MSG_TAB_CAPTURE_RELEASE, tabId });
+    activeTabCaptured = false;
+  }
+
+  /**
+   * Reconcile capture state to the desired `percent` for the active tab,
+   * given the current `tabCaptureEnabled` setting. Engages, gain-updates, or
+   * releases as appropriate.
+   * @param {number} percent
+   */
+  async function reconcileCaptureForActiveTab(percent) {
+    if (!HAS_TAB_CAPTURE) return;
+    if (!activeTabInfo?.id || !activeTabInfo.isHttpx) return;
+    if (!tabCaptureEnabled) {
+      if (activeTabCaptured) {
+        await releaseActiveTabCapture(activeTabInfo.id);
+      }
+      return;
+    }
+    const v = Number(percent);
+    if (v === 100) {
+      if (activeTabCaptured) {
+        await releaseActiveTabCapture(activeTabInfo.id);
+      }
+      return;
+    }
+    await engageOrUpdateCapture(activeTabInfo.id, v);
+  }
+
   /**
    * Push gain to the current tab’s content script(s) on http/https.
    * `chrome.tabs.sendMessage(tabId, payload)` (no `frameId`) broadcasts to all
@@ -353,9 +465,11 @@
 
   slider.addEventListener("input", async () => {
     updateFromSlider();
-    await persistScopedOverrides(Number(slider.value));
-    await pushVolumeToActiveTab(Number(slider.value));
-    await recordLiveVolumeForActiveTab(Number(slider.value));
+    const v = Number(slider.value);
+    await persistScopedOverrides(v);
+    await pushVolumeToActiveTab(v);
+    await recordLiveVolumeForActiveTab(v);
+    await reconcileCaptureForActiveTab(v);
     if (!suppressQuickPresetClear) {
       await setLastQuickPreset(null);
     }
@@ -367,9 +481,11 @@
       suppressQuickPresetClear = true;
       slider.value = btn.getAttribute("data-volume");
       updateFromSlider();
-      await persistScopedOverrides(Number(slider.value));
-      await pushVolumeToActiveTab(Number(slider.value));
-      await recordLiveVolumeForActiveTab(Number(slider.value));
+      const v = Number(slider.value);
+      await persistScopedOverrides(v);
+      await pushVolumeToActiveTab(v);
+      await recordLiveVolumeForActiveTab(v);
+      await reconcileCaptureForActiveTab(v);
       await setLastQuickPreset(QUICK_PRESETS.has(preset) ? preset : null);
       requestAnimationFrame(() => {
         suppressQuickPresetClear = false;
@@ -411,6 +527,49 @@
   saveToUrl.addEventListener("change", () => {
     storageSet({ [STORAGE_KEYS.saveToUrl]: saveToUrl.checked });
   });
+
+  function setTabCaptureUnavailable(reason) {
+    if (!tabCaptureToggle || !tabCaptureSection) return;
+    tabCaptureToggle.checked = false;
+    tabCaptureToggle.disabled = true;
+    const row = tabCaptureSection.querySelector(".switch-row");
+    if (row) row.classList.add("is-disabled");
+    if (tabCaptureHint && reason) tabCaptureHint.textContent = reason;
+  }
+
+  if (!HAS_TAB_CAPTURE) {
+    setTabCaptureUnavailable(
+      "Tab Capture mode requires Chrome's tabCapture API and is not available in this browser."
+    );
+  } else if (tabCaptureToggle) {
+    tabCaptureToggle.addEventListener("change", async () => {
+      const wantOn = Boolean(tabCaptureToggle.checked);
+      if (wantOn) {
+        let granted = false;
+        try {
+          granted = await chrome.permissions.request(TAB_CAPTURE_PERMISSIONS);
+        } catch {
+          granted = false;
+        }
+        if (!granted) {
+          tabCaptureToggle.checked = false;
+          tabCaptureEnabled = false;
+          await storageSet({ [STORAGE_KEYS.tabCaptureEnabled]: false });
+          return;
+        }
+        tabCaptureEnabled = true;
+        await storageSet({ [STORAGE_KEYS.tabCaptureEnabled]: true });
+        await reconcileCaptureForActiveTab(Number(slider.value));
+      } else {
+        tabCaptureEnabled = false;
+        await storageSet({ [STORAGE_KEYS.tabCaptureEnabled]: false });
+        // Background's storage listener releases all captures globally;
+        // mirror that locally so the popup state agrees immediately.
+        activeTabCaptured = false;
+        await bgSend({ type: MSG_TAB_CAPTURE_RELEASE_ALL });
+      }
+    });
+  }
 
   savedSubtabs.forEach((tab) => {
     tab.addEventListener("click", () => {
@@ -459,6 +618,7 @@
       STORAGE_KEYS.lastQuickPreset,
       STORAGE_KEYS.savedTabVolumes,
       STORAGE_KEYS.savedUrlVolumes,
+      STORAGE_KEYS.tabCaptureEnabled,
     ]);
 
     const theme = THEMES.has(data[STORAGE_KEYS.theme]) ? data[STORAGE_KEYS.theme] : "dark";
@@ -470,15 +630,43 @@
     saveToTab.checked = Boolean(data[STORAGE_KEYS.saveToTab]);
     saveToUrl.checked = Boolean(data[STORAGE_KEYS.saveToUrl]);
 
+    if (HAS_TAB_CAPTURE && tabCaptureToggle) {
+      // Reflect the saved preference but only if the optional permission is
+      // actually granted right now — the user could have revoked it between
+      // popup sessions via chrome://extensions.
+      let permissionGranted = false;
+      try {
+        permissionGranted = await chrome.permissions.contains(TAB_CAPTURE_PERMISSIONS);
+      } catch {
+        permissionGranted = false;
+      }
+      tabCaptureEnabled = Boolean(data[STORAGE_KEYS.tabCaptureEnabled]) && permissionGranted;
+      tabCaptureToggle.checked = tabCaptureEnabled;
+      if (tabCaptureEnabled !== Boolean(data[STORAGE_KEYS.tabCaptureEnabled])) {
+        // Storage drifted (permission was revoked); reconcile.
+        await storageSet({ [STORAGE_KEYS.tabCaptureEnabled]: tabCaptureEnabled });
+      }
+    }
+
     const tabsQ = await chrome.tabs.query({ active: true, currentWindow: true });
     const t0 = tabsQ[0];
     let effective = 100;
     if (t0?.id) {
       effective = await resolveVolumeForTab(t0.id, t0.url || "");
+      activeTabInfo = {
+        id: t0.id,
+        url: t0.url || "",
+        isHttpx: isHttpxUrl(t0.url || ""),
+      };
+      activeTabCaptured = await queryActiveTabCaptured(t0.id);
     }
     slider.value = String(effective);
     updateFromSlider();
     await pushVolumeToActiveTab(effective);
+    // Popup open is itself a user-gesture context, so this is a legal place to
+    // call `getMediaStreamId` if Tab Capture mode is on and the resolved level
+    // already differs from default — gives the seamless engage-on-open feel.
+    await reconcileCaptureForActiveTab(effective);
     try {
       await chrome.runtime.sendMessage({ type: MSG_REFRESH_TOOLBAR });
     } catch {

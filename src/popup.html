@@ -109,6 +109,29 @@
           <h2 class="settings-screen-title">Settings</h2>
         </header>
 
+        <section
+          class="settings-block tab-capture-block"
+          aria-labelledby="tab-capture-heading"
+          id="tab-capture-section"
+        >
+          <h3 id="tab-capture-heading" class="settings-heading">Tab Capture mode</h3>
+          <label class="switch-row" for="tab-capture-toggle">
+            <span class="switch-row__main">
+              <span class="switch-row__title">Route tab audio through SSC</span>
+              <span class="switch-row__hint" id="tab-capture-hint">
+                Captures the entire tab's audio and applies volume / boost in the extension.
+                Required for Google Meet, Zoom Web, Discord, and other WebRTC apps.
+                Chrome will ask once for permission to capture tab content.
+              </span>
+            </span>
+            <span class="switch-control" aria-hidden="true">
+              <input type="checkbox" id="tab-capture-toggle" class="switch-input" />
+              <span class="switch-track"></span>
+              <span class="switch-thumb"></span>
+            </span>
+          </label>
+        </section>
+
         <section class="settings-block" aria-labelledby="theme-heading">
           <h3 id="theme-heading" class="settings-heading">Theme</h3>
           <div class="theme-toggle" role="group" aria-labelledby="theme-heading">

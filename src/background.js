@@ -2,10 +2,36 @@ const STORAGE_KEY_TABS = "ssc_saved_tab_volumes";
 const STORAGE_KEY_URLS = "ssc_saved_url_volumes";
 const STORAGE_KEY_ACCENT = "ssc_accent";
 const STORAGE_KEY_LIVE = "ssc_live_tab_volume";
+const STORAGE_KEY_TAB_CAPTURE = "ssc_tab_capture_enabled";
 
 const MSG_RESOLVE_FRAME = "SSC_RESOLVE_VOLUME";
 const MSG_RESOLVE_TAB = "SSC_RESOLVE_VOLUME_FOR_TAB";
 const MSG_REFRESH_TOOLBAR = "SSC_REFRESH_TOOLBAR";
+const MSG_TAB_CAPTURE_ENGAGE = "SSC_TAB_CAPTURE_ENGAGE";
+const MSG_TAB_CAPTURE_GAIN = "SSC_TAB_CAPTURE_GAIN";
+const MSG_TAB_CAPTURE_RELEASE = "SSC_TAB_CAPTURE_RELEASE";
+const MSG_TAB_CAPTURE_RELEASE_ALL = "SSC_TAB_CAPTURE_RELEASE_ALL";
+const MSG_TAB_CAPTURE_QUERY = "SSC_TAB_CAPTURE_QUERY";
+const MSG_OFFSCREEN_START = "SSC_OFFSCREEN_START";
+const MSG_OFFSCREEN_GAIN = "SSC_OFFSCREEN_GAIN";
+const MSG_OFFSCREEN_STOP = "SSC_OFFSCREEN_STOP";
+const MSG_PASSTHROUGH_MODE = "SSC_PASSTHROUGH_MODE";
+
+const OFFSCREEN_PATH = "offscreen.html";
+const OFFSCREEN_REASONS = ["AUDIO_PLAYBACK"];
+const OFFSCREEN_JUSTIFICATION =
+  "Apply per-tab volume gain to captured tab audio (Tab Capture mode).";
+
+/**
+ * In-memory record of every tab currently routed through Tab Capture mode.
+ * Keys are tabIds. Values include the user's pre-capture mute state so we can
+ * restore it cleanly on release without trampling a manual user mute.
+ * @type {Map<number, { wasMuted: boolean, percent: number }>}
+ */
+const capturedTabs = new Map();
+
+/** Serialize concurrent offscreen-document creation attempts. */
+let offscreenCreatingPromise = null;
 
 const ICON_PATHS = {
   16: "icon-16.png",
@@ -282,6 +308,245 @@ function pruneClosedTab(tabId) {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   pruneClosedTab(tabId);
+  // The tab is gone, so no source-tab unmute needed; just clear our state and
+  // the offscreen chain.
+  if (capturedTabs.has(Number(tabId))) {
+    capturedTabs.delete(Number(tabId));
+    void sendOffscreenStop(tabId).then(() => {
+      void maybeCloseOffscreen();
+    });
+    void notifyContentScript(tabId, false);
+  }
+});
+
+/* ----------------------------- Tab Capture mode ----------------------------- */
+
+/**
+ * @returns {Promise<boolean>} true once an offscreen document hosting the
+ * audio chain exists and is reachable. False if the API isn't available
+ * (Firefox) or the user hasn't granted the optional permission.
+ */
+async function ensureOffscreen() {
+  if (!chrome.offscreen || !chrome.offscreen.createDocument) return false;
+  if (!chrome.runtime?.getContexts) {
+    // Older Chrome without getContexts: try create + swallow "already exists".
+    try {
+      await chrome.offscreen.createDocument({
+        url: OFFSCREEN_PATH,
+        reasons: OFFSCREEN_REASONS,
+        justification: OFFSCREEN_JUSTIFICATION,
+      });
+    } catch (err) {
+      if (!String(err?.message || err).includes("Only a single offscreen")) {
+        return false;
+      }
+    }
+    return true;
+  }
+  const url = chrome.runtime.getURL(OFFSCREEN_PATH);
+  const existing = await chrome.runtime.getContexts({
+    contextTypes: ["OFFSCREEN_DOCUMENT"],
+    documentUrls: [url],
+  });
+  if (Array.isArray(existing) && existing.length > 0) return true;
+  if (offscreenCreatingPromise) {
+    try {
+      await offscreenCreatingPromise;
+    } catch {
+      // ignore
+    }
+    return true;
+  }
+  offscreenCreatingPromise = chrome.offscreen.createDocument({
+    url: OFFSCREEN_PATH,
+    reasons: OFFSCREEN_REASONS,
+    justification: OFFSCREEN_JUSTIFICATION,
+  });
+  try {
+    await offscreenCreatingPromise;
+  } catch (err) {
+    if (!String(err?.message || err).includes("Only a single offscreen")) {
+      offscreenCreatingPromise = null;
+      return false;
+    }
+  }
+  offscreenCreatingPromise = null;
+  return true;
+}
+
+/** Close the offscreen document if no captures remain. Cheap to call often. */
+async function maybeCloseOffscreen() {
+  if (!chrome.offscreen?.closeDocument) return;
+  if (capturedTabs.size > 0) return;
+  if (!chrome.runtime?.getContexts) return;
+  const url = chrome.runtime.getURL(OFFSCREEN_PATH);
+  const existing = await chrome.runtime.getContexts({
+    contextTypes: ["OFFSCREEN_DOCUMENT"],
+    documentUrls: [url],
+  });
+  if (!Array.isArray(existing) || existing.length === 0) return;
+  try {
+    await chrome.offscreen.closeDocument();
+  } catch {
+    // ignore
+  }
+}
+
+async function sendOffscreenStart(tabId, streamId, percent) {
+  try {
+    return await chrome.runtime.sendMessage({
+      type: MSG_OFFSCREEN_START,
+      tabId: Number(tabId),
+      streamId,
+      percent: Number(percent),
+    });
+  } catch {
+    return { ok: false };
+  }
+}
+
+async function sendOffscreenGain(tabId, percent) {
+  try {
+    return await chrome.runtime.sendMessage({
+      type: MSG_OFFSCREEN_GAIN,
+      tabId: Number(tabId),
+      percent: Number(percent),
+    });
+  } catch {
+    return { ok: false };
+  }
+}
+
+async function sendOffscreenStop(tabId) {
+  try {
+    return await chrome.runtime.sendMessage({
+      type: MSG_OFFSCREEN_STOP,
+      tabId: Number(tabId),
+    });
+  } catch {
+    return { ok: false };
+  }
+}
+
+async function notifyContentScript(tabId, enabled) {
+  try {
+    await chrome.tabs.sendMessage(Number(tabId), {
+      type: MSG_PASSTHROUGH_MODE,
+      enabled: Boolean(enabled),
+    });
+  } catch {
+    // Content script may not be present (chrome:// page, etc.); harmless.
+  }
+}
+
+/**
+ * Mute the source tab so the user only hears the gain-modified copy coming
+ * out of the offscreen AudioContext (avoid double playback). Snapshots the
+ * tab's prior mute state so {@link releaseCapture} can restore it.
+ */
+async function muteSourceTab(tabId) {
+  let wasMuted = false;
+  try {
+    const tab = await chrome.tabs.get(Number(tabId));
+    wasMuted = Boolean(tab?.mutedInfo?.muted);
+  } catch {
+    // ignore
+  }
+  try {
+    await chrome.tabs.update(Number(tabId), { muted: true });
+  } catch {
+    // ignore
+  }
+  return wasMuted;
+}
+
+async function restoreSourceTabMute(tabId, wasMuted) {
+  if (wasMuted) return;
+  try {
+    await chrome.tabs.update(Number(tabId), { muted: false });
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Engage Tab Capture for `tabId` with the supplied media stream id (which
+ * must have been freshly minted from a popup user gesture). Idempotent —
+ * if the tab is already captured, just updates the gain.
+ */
+async function engageCapture(tabId, streamId, percent) {
+  const tid = Number(tabId);
+  if (Number.isNaN(tid)) return { ok: false, error: "bad tabId" };
+
+  const existing = capturedTabs.get(tid);
+  if (existing) {
+    existing.percent = Number(percent);
+    capturedTabs.set(tid, existing);
+    await sendOffscreenGain(tid, percent);
+    return { ok: true, alreadyCaptured: true };
+  }
+
+  const ready = await ensureOffscreen();
+  if (!ready) return { ok: false, error: "offscreen unavailable" };
+
+  const startResp = await sendOffscreenStart(tid, streamId, percent);
+  if (!startResp?.ok) {
+    return { ok: false, error: startResp?.error || "offscreen start failed" };
+  }
+
+  const wasMuted = await muteSourceTab(tid);
+  capturedTabs.set(tid, { wasMuted, percent: Number(percent) });
+  void notifyContentScript(tid, true);
+  return { ok: true };
+}
+
+async function setCaptureGain(tabId, percent) {
+  const tid = Number(tabId);
+  const rec = capturedTabs.get(tid);
+  if (!rec) return { ok: false, error: "not captured" };
+  rec.percent = Number(percent);
+  capturedTabs.set(tid, rec);
+  await sendOffscreenGain(tid, percent);
+  return { ok: true };
+}
+
+async function releaseCapture(tabId) {
+  const tid = Number(tabId);
+  const rec = capturedTabs.get(tid);
+  if (!rec) return { ok: true, wasCaptured: false };
+  capturedTabs.delete(tid);
+  await sendOffscreenStop(tid);
+  await restoreSourceTabMute(tid, rec.wasMuted);
+  void notifyContentScript(tid, false);
+  await maybeCloseOffscreen();
+  return { ok: true, wasCaptured: true };
+}
+
+async function releaseAllCaptures() {
+  const ids = Array.from(capturedTabs.keys());
+  for (const id of ids) {
+    await releaseCapture(id);
+  }
+  return { ok: true, released: ids.length };
+}
+
+// On URL change in a tab, any existing capture targets a stale stream id.
+// Tear it down so the popup can re-engage on the new page if needed.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (typeof changeInfo.url !== "string") return;
+  if (capturedTabs.has(Number(tabId))) {
+    void releaseCapture(tabId);
+  }
+});
+
+// If the user disables Tab Capture mode globally via storage, drop everything.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local") return;
+  const change = changes[STORAGE_KEY_TAB_CAPTURE];
+  if (!change) return;
+  if (change.newValue === false || change.newValue === undefined) {
+    void releaseAllCaptures();
+  }
 });
 
 /**
@@ -416,6 +681,33 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ volume });
     });
     return true;
+  }
+
+  if (msg?.type === MSG_TAB_CAPTURE_ENGAGE) {
+    engageCapture(msg.tabId, msg.streamId, msg.percent).then(sendResponse);
+    return true;
+  }
+
+  if (msg?.type === MSG_TAB_CAPTURE_GAIN) {
+    setCaptureGain(msg.tabId, msg.percent).then(sendResponse);
+    return true;
+  }
+
+  if (msg?.type === MSG_TAB_CAPTURE_RELEASE) {
+    releaseCapture(msg.tabId).then(sendResponse);
+    return true;
+  }
+
+  if (msg?.type === MSG_TAB_CAPTURE_RELEASE_ALL) {
+    releaseAllCaptures().then(sendResponse);
+    return true;
+  }
+
+  if (msg?.type === MSG_TAB_CAPTURE_QUERY) {
+    const tid = Number(msg.tabId);
+    const rec = capturedTabs.get(tid);
+    sendResponse({ ok: true, captured: Boolean(rec), percent: rec?.percent });
+    return false;
   }
 
   return false;
