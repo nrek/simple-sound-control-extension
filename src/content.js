@@ -3,13 +3,6 @@
   const MSG_RESOLVE = "SSC_RESOLVE_VOLUME";
   const MSG_PASSTHROUGH = "SSC_PASSTHROUGH_MODE";
   const DEFAULT_PERCENT = 100;
-  /**
-   * Floor in milliseconds between successive page-driven volume corrections we'll
-   * apply to the same element. Bounds the cost of a "fight" with a page that
-   * resets `el.volume` in a tight loop. 60 Hz is plenty for human-perceptible
-   * volume control.
-   */
-  const ENFORCE_THROTTLE_MS = 16;
 
   const proto = location.protocol;
   if (proto !== "http:" && proto !== "https:") {
@@ -39,11 +32,10 @@
   const tracked = new Set();
 
   /**
-   * Per-element bookkeeping for the volumechange enforcer:
-   *  - `lastEnforceAt`: monotonic ms of our last self-write, used to throttle.
-   *  - `expectedVolume`: the value we just wrote, so we can short-circuit the
-   *    `volumechange` event we know we caused.
-   * @type {WeakMap<HTMLMediaElement, { lastEnforceAt: number, expectedVolume: number }>}
+   * Per-element bookkeeping for the volumechange enforcer. `expectedVolume` is
+   * the value we just wrote, used to short-circuit the `volumechange` event we
+   * know we caused (otherwise we'd loop on our own writes).
+   * @type {WeakMap<HTMLMediaElement, { expectedVolume: number }>}
    */
   const enforceMeta = new WeakMap();
 
@@ -97,10 +89,7 @@
    */
   function writeVolume(el, v) {
     try {
-      const meta = enforceMeta.get(el) || { lastEnforceAt: 0, expectedVolume: -1 };
-      meta.expectedVolume = v;
-      meta.lastEnforceAt = performance.now();
-      enforceMeta.set(el, meta);
+      enforceMeta.set(el, { expectedVolume: v });
       el.volume = v;
     } catch {
       // Some sites lock down setters via Object.defineProperty; nothing we can do.
@@ -131,6 +120,17 @@
    * `volumechange` handler. If the page changed the element's volume away from
    * what we want and we're currently asserting (non-default), put it back.
    * Inert at default 100% so non-extension volume control on the page works.
+   *
+   * No throttle here: a previous version capped re-corrections at 16 ms, which
+   * sounded fine on paper but in practice let YouTube's slider win. A drag
+   * fires a burst of `el.volume` writes within milliseconds of each other —
+   * the first wakes us up and we write our desired value, but the rest land
+   * inside the throttle window and are ignored. After the drag ends nothing
+   * fires `volumechange` again, so the page's last value sticks until something
+   * else (popup re-open, storage change) re-pings the content script. The
+   * `expectedVolume` short-circuit below is sufficient to keep us from looping
+   * on our own writes; the throttle was redundant defense that broke the
+   * common case.
    */
   function enforceOnElement(el) {
     if (!(el instanceof HTMLMediaElement)) return;
@@ -141,14 +141,7 @@
     if (Math.abs(el.volume - desired) <= 0.001) return;
 
     const meta = enforceMeta.get(el);
-    if (meta) {
-      // The event is for our own write — Math.abs check above already covered the
-      // happy path; this guards a race where two writes interleave.
-      if (Math.abs(el.volume - meta.expectedVolume) <= 0.001) return;
-      // Throttle: never re-correct more often than once per ENFORCE_THROTTLE_MS.
-      const now = performance.now();
-      if (now - meta.lastEnforceAt < ENFORCE_THROTTLE_MS) return;
-    }
+    if (meta && Math.abs(el.volume - meta.expectedVolume) <= 0.001) return;
 
     writeVolume(el, desired);
   }

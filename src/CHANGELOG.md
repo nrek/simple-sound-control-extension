@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-05-01
+
+### Fixed
+
+- **YouTube's player slider could permanently override the SSC level until the popup was reopened.** The `volumechange` enforcer had a 16 ms throttle that was meant to bound the cost of a hot-loop fight with a misbehaving page. In practice it was unnecessary (the `expectedVolume` short-circuit already prevents loops on our own writes) and it broke the common case: dragging YouTube's slider produces a burst of `el.volume` writes within a few milliseconds, the first wakes the enforcer and we re-assert, every other write lands inside the throttle window and is silently ignored, the drag ends with `el.volume` at YouTube's value, and `volumechange` never fires again so we never re-correct. The throttle is gone; the enforcer now responds to every page-driven write.
+
 ## [0.1.8] - 2026-05-01
 
 ### Reverted
