@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-05-01
+
+### Fixed
+
+- **WebRTC audio control (Google Meet, Zoom Web, Discord, etc.):** the content script now sets `el.volume` directly on every tracked `<audio>` / `<video>` element in addition to (or instead of) routing through Web Audio. Previously the gain-node-only approach silently no-op'd on `srcObject`-backed (`MediaStream`) elements, so Meet sliders did nothing. New behaviour:
+  - **0–100%:** controlled via native `HTMLMediaElement.volume` — works on WebRTC and on every other media element, no `AudioContext` required.
+  - **>100% (boost):** still requires the Web Audio gain chain. WebRTC elements are detected (presence of `srcObject`) and skipped — Chrome's WebRTC audio path silences them when routed through `createMediaElementSource`. Boost on Meet et al. silently caps at 100%.
+  - All tracked elements are kept in a `Set<WeakRef<HTMLMediaElement>>` and re-applied on every `setVolumePercent` so live mid-call slider drags reach every per-participant audio element, not just the ones present at first activation.
+
 ## [0.1.1] - 2026-05-01
 
 ### Added
