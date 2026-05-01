@@ -29,7 +29,6 @@
     }
   },
   "permissions": ["storage", "tabs"],
-  "host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js",
     "scripts": ["background.js"]

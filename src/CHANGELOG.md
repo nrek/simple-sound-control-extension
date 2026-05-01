@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-05-01
+
+### Removed
+
+- **`host_permissions: ["http://*/*", "https://*/*"]`** dropped from both Chrome and Firefox manifests. It triggered the Chrome Web Store "broad host permissions" reviewer warning while doing nothing for us — every code path was already covered by either the declared `content_scripts.matches` (which handles content-script injection on every page, the actual reason the extension needs broad reach) or the `tabs` permission (which covers `tab.url`/`tab.title` access and `chrome.tabs.update({muted})`). We don't use `chrome.scripting`, cookies, `webRequest`, or any cross-origin fetch, so there was no remaining caller for host_permissions.
+
 ## [0.1.9] - 2026-05-01
 
 ### Fixed

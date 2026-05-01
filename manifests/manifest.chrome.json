@@ -21,7 +21,6 @@
   },
   "permissions": ["storage", "tabs"],
   "optional_permissions": ["tabCapture", "offscreen"],
-  "host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js"
   },
