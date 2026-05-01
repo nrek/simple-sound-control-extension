@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-05-01
+
+### Reverted
+
+- **Reverted 0.1.7's `el.volume = 1` pinning in Tab Capture mode.** The right semantics for Tab Capture is **multiplier**, not authoritative override: the gain node naturally composes on top of whatever the page is outputting (post the page's own volume UI), so YouTube's player slider × SSC slider = effective volume in the obvious way. Pinning `el.volume = 1` was both unnecessary (the gain node was already doing the right math) and fragile (modifying page state to win a fight that doesn't need to be fought leaves us exposed to whatever those pages decide to do next). Passthrough is back to fully inert — the content script does nothing in Tab Capture mode.
+- **Practical consequences:** YouTube's player slider works normally in Tab Capture mode; setting YouTube to 50% with SSC at 50% gives 25% effective output. Meet's per-participant volume control works again. Meet's auto-reset to `el.volume = 1` is benign because that's just the page restoring its own state — it composes with our gain at 1 × SSC = SSC.
+
 ## [0.1.7] - 2026-05-01
 
 ### Changed

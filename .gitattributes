@@ -1,0 +1,35 @@
+# Force LF line endings for all text files in this repo, regardless of the
+# contributor's local `core.autocrlf` setting. Browser extensions are loaded
+# directly by Chrome/Firefox and shipped as-is, so we want a single canonical
+# EOL for diffs, signing, and the .zip/.xpi packages produced by build.mjs.
+* text=auto eol=lf
+
+# Source / config — explicit for clarity (defensive overrides of any future
+# detection heuristics).
+*.js          text eol=lf
+*.mjs         text eol=lf
+*.cjs         text eol=lf
+*.json        text eol=lf
+*.html        text eol=lf
+*.css         text eol=lf
+*.svg         text eol=lf
+*.md          text eol=lf
+*.yml         text eol=lf
+*.yaml        text eol=lf
+*.sh          text eol=lf
+
+# Binary artifacts — never touch EOLs.
+*.png         binary
+*.jpg         binary
+*.jpeg        binary
+*.gif         binary
+*.webp        binary
+*.ico         binary
+*.zip         binary
+*.xpi         binary
+*.crx         binary
+*.pem         binary
+*.woff        binary
+*.woff2       binary
+*.ttf         binary
+*.eot         binary
