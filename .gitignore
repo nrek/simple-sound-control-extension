@@ -1,0 +1,24 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Build / release artifacts (keep source only in git)
+*.zip
+*.crx
+*.pem
+
+# Local env / secrets (none expected, but safe default)
+.env
+.env.*
+
+# Logs
+*.log
+npm-debug.log*
