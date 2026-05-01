@@ -19,60 +19,41 @@
   /** @type {GainNode | null} */
   let masterGain = null;
 
-  /** Elements routed through our Web Audio gain chain. Once routed, can't unroute. */
-  const routed = new WeakSet();
-  /** Dedupe set for `tracked` membership and watcher attachment. */
-  const trackedKeys = new WeakSet();
   /**
-   * Live registry of media elements we've seen, kept as WeakRefs so the GC can
-   * reclaim them when the page removes them. We iterate this on every volume
-   * change to push the new level out, pruning dead refs as we go.
-   * @type {Set<WeakRef<HTMLMediaElement>>}
+   * Elements routed through our Web Audio gain chain via
+   * `createMediaElementSource`. Once routed, the element's audio flows
+   * through our GainNode permanently (there is no un-route). The page's
+   * own `el.volume` still works — it attenuates *before* the signal
+   * reaches our gain stage, so effective volume = el.volume × gain.
    */
-  const tracked = new Set();
+  const routed = new WeakSet();
 
   /**
-   * Per-element bookkeeping for the volumechange enforcer. `expectedVolume` is
-   * the value we just wrote, used to short-circuit the `volumechange` event we
-   * know we caused (otherwise we'd loop on our own writes).
-   * @type {WeakMap<HTMLMediaElement, { expectedVolume: number }>}
+   * Elements where `createMediaElementSource` threw (CORS, srcObject /
+   * WebRTC, or browser-internal restrictions). We skip these on future
+   * route attempts. Tab Capture mode covers them instead.
    */
-  const enforceMeta = new WeakMap();
+  const routeFailed = new WeakSet();
+
+  const trackedKeys = new WeakSet();
+  /** @type {Set<WeakRef<HTMLMediaElement>>} */
+  const tracked = new Set();
 
   let pendingPercent = DEFAULT_PERCENT;
   let audioUnlocked = false;
   /**
-   * When true, the background service worker is routing this tab's audio
-   * through an offscreen `tabCapture` chain. The source tab is muted at the
-   * tab level, so `el.volume` writes from us do nothing useful and just pick
-   * fights with the page (e.g. Meet auto-resets). Stay out of the way until
-   * the background tells us to resume.
+   * When true, Tab Capture mode is active for this tab. The offscreen
+   * gain node handles volume; the content script stays fully inert.
    */
   let passthroughMode = false;
 
-  /** Boost is the only situation that requires a Web Audio graph. */
-  function isBoost() {
-    return Number(pendingPercent) > 100;
-  }
-
-  /** Desired native `el.volume` for an element given current pendingPercent + routing. */
-  function desiredVolumeFor(el) {
-    if (routed.has(el)) return 1;
-    return Math.max(0, Math.min(1, Number(pendingPercent) / 100));
-  }
-
-  /**
-   * Build the AudioContext + master gain. Only legal once `audioUnlocked` is true
-   * (sticky activation). Idempotent. Only invoked when boost > 100% is actually
-   * requested, so silent / non-audio pages never construct a context.
-   */
   function ensureGraph() {
     if (ctx && masterGain) return;
     if (!audioUnlocked) return;
     try {
       ctx = new AudioContext({ latencyHint: "interactive" });
       masterGain = ctx.createGain();
-      masterGain.gain.value = 1;
+      masterGain.gain.value = Math.max(0, Math.min(4, Number(pendingPercent) / 100));
       masterGain.connect(ctx.destination);
       if (ctx.state === "suspended") {
         ctx.resume().catch(() => {});
@@ -83,73 +64,9 @@
     }
   }
 
-  /**
-   * Write `el.volume` and record the value so the upcoming `volumechange` event
-   * is recognized as ours and ignored by `enforceOnElement`.
-   */
-  function writeVolume(el, v) {
-    try {
-      enforceMeta.set(el, { expectedVolume: v });
-      el.volume = v;
-    } catch {
-      // Some sites lock down setters via Object.defineProperty; nothing we can do.
-    }
-  }
-
-  /**
-   * Push the current `pendingPercent` to a single element. Active write — used
-   * when the slider moves or when we first track an element. Skipped at default
-   * 100% on unrouted elements so we don't override the page's natural volume.
-   */
-  function applyToElement(el) {
-    if (!(el instanceof HTMLMediaElement)) return;
-    // In Tab Capture mode the offscreen gain node is the sole attenuator and
-    // the page's `el.volume` naturally composes as a multiplier on top — no
-    // need (and no benefit) to touch the page's state. Stay out of the way.
-    if (passthroughMode) return;
-    if (routed.has(el)) {
-      if (el.volume !== 1) writeVolume(el, 1);
-      return;
-    }
-    if (Number(pendingPercent) === DEFAULT_PERCENT) return;
-    const v = desiredVolumeFor(el);
-    if (Math.abs(el.volume - v) > 0.001) writeVolume(el, v);
-  }
-
-  /**
-   * `volumechange` handler. If the page changed the element's volume away from
-   * what we want and we're currently asserting (non-default), put it back.
-   * Inert at default 100% so non-extension volume control on the page works.
-   *
-   * No throttle here: a previous version capped re-corrections at 16 ms, which
-   * sounded fine on paper but in practice let YouTube's slider win. A drag
-   * fires a burst of `el.volume` writes within milliseconds of each other —
-   * the first wakes us up and we write our desired value, but the rest land
-   * inside the throttle window and are ignored. After the drag ends nothing
-   * fires `volumechange` again, so the page's last value sticks until something
-   * else (popup re-open, storage change) re-pings the content script. The
-   * `expectedVolume` short-circuit below is sufficient to keep us from looping
-   * on our own writes; the throttle was redundant defense that broke the
-   * common case.
-   */
-  function enforceOnElement(el) {
-    if (!(el instanceof HTMLMediaElement)) return;
-    if (passthroughMode) return;
-    if (Number(pendingPercent) === DEFAULT_PERCENT && !routed.has(el)) return;
-
-    const desired = desiredVolumeFor(el);
-    if (Math.abs(el.volume - desired) <= 0.001) return;
-
-    const meta = enforceMeta.get(el);
-    if (meta && Math.abs(el.volume - meta.expectedVolume) <= 0.001) return;
-
-    writeVolume(el, desired);
-  }
-
-  function applyGainFromPending() {
+  function applyGain() {
     if (!masterGain) return;
-    const g = Math.max(0, Math.min(4, Number(pendingPercent) / 100));
-    masterGain.gain.value = g;
+    masterGain.gain.value = Math.max(0, Math.min(4, Number(pendingPercent) / 100));
   }
 
   function track(el) {
@@ -157,25 +74,21 @@
     if (trackedKeys.has(el)) return;
     trackedKeys.add(el);
     tracked.add(new WeakRef(el));
-    el.addEventListener("volumechange", () => enforceOnElement(el), {
-      capture: true,
-      passive: true,
-    });
   }
 
   /**
-   * Try to route an element through the Web Audio gain chain so that we can
-   * apply boost > 100%. WebRTC (`srcObject`-backed) elements are skipped because
-   * `createMediaElementSource` either silences them or no-ops on Chrome's
-   * WebRTC audio path.
+   * Route an element through our Web Audio gain chain. After this call
+   * the element's audio flows through: el → MediaElementSource → masterGain
+   * → ctx.destination. `el.volume` still works as a pre-gain attenuator
+   * controlled entirely by the page — we never write to it.
    */
   function tryRoute(el) {
     if (!(el instanceof HTMLMediaElement)) return;
     if (routed.has(el)) return;
-    if (el.dataset.sscRouteFailed === "1") return;
+    if (routeFailed.has(el)) return;
     if (!audioUnlocked) return;
     if (el.srcObject) {
-      el.dataset.sscRouteFailed = "1";
+      routeFailed.add(el);
       return;
     }
     ensureGraph();
@@ -184,25 +97,12 @@
       const src = ctx.createMediaElementSource(el);
       src.connect(masterGain);
       routed.add(el);
-      applyToElement(el);
     } catch {
-      el.dataset.sscRouteFailed = "1";
+      routeFailed.add(el);
     }
   }
 
-  function applyToAll() {
-    for (const ref of tracked) {
-      const el = ref.deref();
-      if (!el || !el.isConnected) {
-        tracked.delete(ref);
-        continue;
-      }
-      applyToElement(el);
-    }
-  }
-
-  function routeAllForBoost() {
-    if (!isBoost()) return;
+  function routeAll() {
     if (!audioUnlocked) return;
     ensureGraph();
     if (!ctx || !masterGain) return;
@@ -216,36 +116,24 @@
     }
   }
 
-  /**
-   * @param {number} percent UI 0–400 (100 = unity gain)
-   */
   function setVolumePercent(percent) {
     pendingPercent = Number(percent);
-
-    applyToAll();
-
-    if (audioUnlocked && isBoost()) {
-      ensureGraph();
-      routeAllForBoost();
+    applyGain();
+    if (pendingPercent !== DEFAULT_PERCENT && audioUnlocked) {
+      routeAll();
+      scan(document);
     }
-
-    if (masterGain) {
-      applyGainFromPending();
-    }
-
-    scan(document);
   }
 
   function onFirstUserActivation() {
     if (audioUnlocked) return;
     audioUnlocked = true;
-    if (isBoost()) {
+    if (pendingPercent !== DEFAULT_PERCENT) {
       ensureGraph();
+      routeAll();
       scan(document);
-      routeAllForBoost();
-      applyGainFromPending();
+      applyGain();
     }
-    applyToAll();
     for (const ev of ACTIVATION_EVENTS) {
       window.removeEventListener(ev, onFirstUserActivation, true);
     }
@@ -254,26 +142,18 @@
   function attachMedia(el) {
     if (!(el instanceof HTMLMediaElement)) return;
     track(el);
-    applyToElement(el);
-    if (audioUnlocked && isBoost()) {
+    if (pendingPercent !== DEFAULT_PERCENT && audioUnlocked) {
       tryRoute(el);
-      applyGainFromPending();
     }
   }
 
-  /** Shadow roots we're already observing, so we don't double-attach. */
+  /* ---------------------- Shadow DOM traversal ---------------------- */
+
   const observedRoots = new WeakSet();
 
-  /**
-   * Recursively scan `root` for `<video>` / `<audio>`, piercing open shadow
-   * roots. Reddit's `<shreddit-player>`, Twitch clip embeds, and many modern
-   * frameworks wrap media elements inside web components whose shadow DOM is
-   * invisible to a plain `querySelectorAll` on `document`.
-   */
   function scan(root) {
     if (!root) return;
     root.querySelectorAll?.("video, audio").forEach((n) => attachMedia(n));
-    // Traverse open shadow roots on every element under `root`.
     root.querySelectorAll?.("*").forEach((el) => {
       if (el.shadowRoot) scanAndObserveShadow(el.shadowRoot);
     });
@@ -292,25 +172,21 @@
         if (n.nodeType !== Node.ELEMENT_NODE) return;
         if (n instanceof HTMLMediaElement) attachMedia(n);
         else scan(n);
-        // If the added node itself has a shadow root, observe it.
         if (n.shadowRoot) scanAndObserveShadow(n.shadowRoot);
       });
     }
   });
 
-  // Intercept `Element.prototype.attachShadow` so we automatically observe
-  // shadow roots created *after* our initial scan. This is the only reliable
-  // way to catch components that create their shadow root lazily (e.g. on
-  // first interaction or on connectedCallback after our scan has already run).
   const _origAttachShadow = Element.prototype.attachShadow;
   Element.prototype.attachShadow = function attachShadowSSC(init) {
     const sr = _origAttachShadow.call(this, init);
     if (init.mode === "open") {
-      // Defer slightly so the component has time to populate the shadow tree.
       setTimeout(() => scanAndObserveShadow(sr), 0);
     }
     return sr;
   };
+
+  /* ---------------------- Message handling ---------------------- */
 
   function pullResolvedVolume() {
     chrome.runtime.sendMessage(
@@ -334,8 +210,6 @@
       const wasOn = passthroughMode;
       passthroughMode = next;
       if (wasOn && !next) {
-        // Capture released. Re-resolve the desired level and apply via
-        // `el.volume` (we're now back in content-script mode).
         pullResolvedVolume();
       }
       sendResponse({ ok: true, passthroughMode });
@@ -343,6 +217,8 @@
     }
     return false;
   });
+
+  /* ---------------------- Bootstrap ---------------------- */
 
   mo.observe(document.documentElement, { childList: true, subtree: true });
 
@@ -361,9 +237,6 @@
     pullResolvedVolume();
   });
 
-  // Activation-triggering events per Chrome's user activation v2:
-  // pointerdown counts for mouse, pointerup also catches touch, keydown covers most keys.
-  // touchstart is intentionally omitted — it does NOT count as activation in modern Chrome.
   const ACTIVATION_EVENTS = ["pointerdown", "pointerup", "keydown"];
   for (const ev of ACTIVATION_EVENTS) {
     window.addEventListener(ev, onFirstUserActivation, { capture: true, passive: true });

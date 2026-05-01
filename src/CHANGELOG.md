@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-01
+
+### Changed (BREAKING — architecture)
+
+- **SSC no longer writes to `el.volume`. Ever.** The entire `writeVolume` / `enforceOnElement` / `enforceMeta` / `volumechange` listener path has been removed. The content script now works exclusively through Web Audio: every `<video>` / `<audio>` element is routed through a shared `GainNode` via `createMediaElementSource`. The page's own `el.volume` is never read or written by the extension — it flows into our gain stage as a pre-multiplier, so the composition is always `el.volume × (SSC% / 100) = effective volume`. YouTube at 50% with SSC at 50% = 25% effective. Reddit's player controls, YouTube's slider, Meet's participant volume — all work normally and are never interfered with.
+
+- **`dataset.sscRouteFailed` replaced with a `WeakSet`.** No more mutations to page DOM.
+
+### Trade-offs (known, accepted)
+
+- **Elements that can't be routed** (`srcObject` / WebRTC, or elements where `createMediaElementSource` throws due to CORS) are unaffected by SSC in content-script mode. Tab Capture mode (Chrome, opt-in) covers these cases.
+- **First volume change requires a prior user gesture on the page** (click, keypress, etc.) because `AudioContext` creation requires user activation. If the user opens the SSC popup before interacting with the page, the gain applies as soon as they click/type on the page. At SSC 100% (default) nothing needs to happen — gain = 1.0 is transparent.
+
 ## [0.1.13] - 2026-05-01
 
 ### Fixed
