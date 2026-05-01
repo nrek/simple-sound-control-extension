@@ -5,7 +5,7 @@ Thanks for helping improve **Simple Sound Control**.
 ## Getting started
 
 1. **Fork** the repository and create a **branch** for your change (`fix/…`, `feat/…`, etc.).  
-2. **Load unpacked** in Chrome (`chrome://extensions` → Developer mode → Load unpacked → this directory).  
+2. For **Firefox**, use `about:debugging#/runtime/this-firefox` → **Load Temporary Add-on…** → select **`firefox/manifest.json`**. For **Chrome**, load the **`chrome`** folder the same way as the upstream README describes.  
 3. Make your change and **manually test** on a few real sites (e.g. a page with `<video>`).  
 4. Open a **Pull Request** with a clear description of what changed and why.
 

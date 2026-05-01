@@ -1,6 +1,6 @@
 # Simple Sound Control
 
-Chrome extension (Manifest V3) that **fine-tunes audio for the active tab**—from mute up to **400%** gain—with a small, Material-inspired popup. **Ad-free.** Settings and saved levels stay **on your device** in extension storage.
+**Chrome** build (Manifest V3) in this `chrome/` folder. It **fine-tunes audio for the active tab**—from mute up to **400%** gain—with a small, Material-inspired popup. **Ad-free.** Settings and saved levels stay **on your device** in extension storage.
 
 **Repository:** [github.com/nrek/simple-sound-control-extension](https://github.com/nrek/simple-sound-control-extension)
 
@@ -21,7 +21,7 @@ Chrome extension (Manifest V3) that **fine-tunes audio for the active tab**—fr
 
 1. Clone this repository.  
 2. Open `chrome://extensions`, enable **Developer mode**.  
-3. Click **Load unpacked** and select this folder (`simple-sound-control-extension` root, where `manifest.json` lives).  
+3. Click **Load unpacked** and select the **`chrome`** folder in this repository (the directory that contains `manifest.json`).  
 
 Icons `icon-16.png` … `icon-128.png` must be present beside `manifest.json` (see `manifest.json` `icons` / `action.default_icon`).
 
@@ -42,7 +42,7 @@ This does **not** work on `chrome://`, the Chrome Web Store, PDF viewer, or page
 
 ## Privacy
 
-No accounts, no telemetry in this codebase, and no third-party analytics. Data lives in **`chrome.storage.local`** on your machine. See **`SECURITY.md`** for reporting issues.
+No accounts, no telemetry in this codebase, and no third-party analytics. Data lives in extension **`storage.local`** on your machine. See **`SECURITY.md`** for reporting issues.
 
 ## Contributing
 
