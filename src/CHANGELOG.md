@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Firefox AMO submission validation:** `manifests/manifest.firefox.json` now declares **`background.scripts: ["background.js"]`** as a Firefox-compatible fallback alongside `background.service_worker`, and **`browser_specific_settings.gecko.data_collection_permissions.required: ["none"]`** to reflect that the extension performs no remote data collection (all storage is local). Chrome manifest unchanged.
 - **Web Audio / autoplay policy:** `AudioContext` is no longer created at `document_idle`. The graph is created on the first **user gesture** (`pointerdown`, `keydown`, or `touchstart`) on the page, then `resume()` runs in that context—avoids console warnings and failed resumes on non-audio pages (e.g. `chrome://newtab/` if the script ever runs there). Non-`http:`/`https:` pages no-op with a minimal message listener.
 - **Saved-tab orphans on browser restart:** background reconciles `ssc_saved_tab_volumes` and `ssc_live_tab_volume` against currently open tabs on `runtime.onStartup` and `runtime.onInstalled`, dropping rows whose tab IDs are no longer in this session.
 
