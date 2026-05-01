@@ -1,7 +1,7 @@
 {
   "name": "simple-sound-control-extension",
   "private": true,
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "Per-tab volume boost (Chrome + Firefox MV3); shared src, dist outputs",
   "scripts": {
     "build": "node scripts/build.mjs",

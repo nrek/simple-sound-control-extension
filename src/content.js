@@ -261,8 +261,29 @@
     }
   }
 
+  /** Shadow roots we're already observing, so we don't double-attach. */
+  const observedRoots = new WeakSet();
+
+  /**
+   * Recursively scan `root` for `<video>` / `<audio>`, piercing open shadow
+   * roots. Reddit's `<shreddit-player>`, Twitch clip embeds, and many modern
+   * frameworks wrap media elements inside web components whose shadow DOM is
+   * invisible to a plain `querySelectorAll` on `document`.
+   */
   function scan(root) {
+    if (!root) return;
     root.querySelectorAll?.("video, audio").forEach((n) => attachMedia(n));
+    // Traverse open shadow roots on every element under `root`.
+    root.querySelectorAll?.("*").forEach((el) => {
+      if (el.shadowRoot) scanAndObserveShadow(el.shadowRoot);
+    });
+  }
+
+  function scanAndObserveShadow(sr) {
+    if (!sr || observedRoots.has(sr)) return;
+    observedRoots.add(sr);
+    scan(sr);
+    mo.observe(sr, { childList: true, subtree: true });
   }
 
   const mo = new MutationObserver((mutations) => {
@@ -271,9 +292,25 @@
         if (n.nodeType !== Node.ELEMENT_NODE) return;
         if (n instanceof HTMLMediaElement) attachMedia(n);
         else scan(n);
+        // If the added node itself has a shadow root, observe it.
+        if (n.shadowRoot) scanAndObserveShadow(n.shadowRoot);
       });
     }
   });
+
+  // Intercept `Element.prototype.attachShadow` so we automatically observe
+  // shadow roots created *after* our initial scan. This is the only reliable
+  // way to catch components that create their shadow root lazily (e.g. on
+  // first interaction or on connectedCallback after our scan has already run).
+  const _origAttachShadow = Element.prototype.attachShadow;
+  Element.prototype.attachShadow = function attachShadowSSC(init) {
+    const sr = _origAttachShadow.call(this, init);
+    if (init.mode === "open") {
+      // Defer slightly so the component has time to populate the shadow tree.
+      setTimeout(() => scanAndObserveShadow(sr), 0);
+    }
+    return sr;
+  };
 
   function pullResolvedVolume() {
     chrome.runtime.sendMessage(

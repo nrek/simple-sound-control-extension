@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-05-01
+
+### Fixed
+
+- **Volume control now works on Reddit and other sites using shadow DOM.** Reddit's video player (`<shreddit-player>`) wraps its `<video>` element inside a web component's shadow root. `querySelectorAll("video, audio")` and `MutationObserver` cannot pierce shadow DOM boundaries, so the content script never found the element. Three changes:
+  1. `scan()` now recursively descends into open shadow roots on every element it encounters.
+  2. The `MutationObserver` callback checks newly added nodes for shadow roots and attaches an observer to each.
+  3. `Element.prototype.attachShadow` is intercepted (monkey-patched) so shadow roots created *after* the initial scan are automatically observed. This catches components that create their shadow root lazily (e.g. on `connectedCallback` or first interaction).
+  - Same fix benefits any site using web components for media: Twitch clip embeds, some podcast players, modern SPA frameworks.
+
 ## [0.1.12] - 2026-05-01
 
 ### Fixed
