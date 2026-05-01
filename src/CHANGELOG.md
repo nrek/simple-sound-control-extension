@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-05-01
+
+### Fixed
+
+- **WebRTC volume "auto-corrects" back to 100% (Google Meet, Zoom Web, Discord, etc.):** Meet and similar apps actively re-stamp `audio.volume = 1` on their own elements when participants join/leave or when the active speaker switches, undoing the slider value within seconds. The content script now attaches a `volumechange` listener to every tracked media element and re-asserts the desired level whenever the page tries to override it. Inert at the default 100% so pages that own their volume slider (YouTube, Twitch, Spotify Web, etc.) keep working normally; only engages once the user has explicitly moved the SSC slider away from 100%.
+- **Bounded "fight" cost.** A 16 ms (≈60 Hz) per-element throttle plus an "expected value" short-circuit prevents runaway feedback loops with pages that loop their own resets, while still feeling instant to humans.
+
 ## [0.1.2] - 2026-05-01
 
 ### Fixed

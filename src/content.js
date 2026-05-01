@@ -2,6 +2,13 @@
   const MSG_SET = "SSC_SET_VOLUME";
   const MSG_RESOLVE = "SSC_RESOLVE_VOLUME";
   const DEFAULT_PERCENT = 100;
+  /**
+   * Floor in milliseconds between successive page-driven volume corrections we'll
+   * apply to the same element. Bounds the cost of a "fight" with a page that
+   * resets `el.volume` in a tight loop. 60 Hz is plenty for human-perceptible
+   * volume control.
+   */
+  const ENFORCE_THROTTLE_MS = 16;
 
   const proto = location.protocol;
   if (proto !== "http:" && proto !== "https:") {
@@ -20,7 +27,7 @@
 
   /** Elements routed through our Web Audio gain chain. Once routed, can't unroute. */
   const routed = new WeakSet();
-  /** Dedupe set for `tracked` membership. */
+  /** Dedupe set for `tracked` membership and watcher attachment. */
   const trackedKeys = new WeakSet();
   /**
    * Live registry of media elements we've seen, kept as WeakRefs so the GC can
@@ -30,12 +37,27 @@
    */
   const tracked = new Set();
 
+  /**
+   * Per-element bookkeeping for the volumechange enforcer:
+   *  - `lastEnforceAt`: monotonic ms of our last self-write, used to throttle.
+   *  - `expectedVolume`: the value we just wrote, so we can short-circuit the
+   *    `volumechange` event we know we caused.
+   * @type {WeakMap<HTMLMediaElement, { lastEnforceAt: number, expectedVolume: number }>}
+   */
+  const enforceMeta = new WeakMap();
+
   let pendingPercent = DEFAULT_PERCENT;
   let audioUnlocked = false;
 
   /** Boost is the only situation that requires a Web Audio graph. */
   function isBoost() {
     return Number(pendingPercent) > 100;
+  }
+
+  /** Desired native `el.volume` for an element given current pendingPercent + routing. */
+  function desiredVolumeFor(el) {
+    if (routed.has(el)) return 1;
+    return Math.max(0, Math.min(1, Number(pendingPercent) / 100));
   }
 
   /**
@@ -61,25 +83,60 @@
   }
 
   /**
-   * Push the current `pendingPercent` to a single element.
-   *  - Routed elements have their `.volume` forced to 1; the gain node carries the
-   *    full level (and any boost) for them.
-   *  - Unrouted elements get `.volume` set directly in the [0..1] range. This is
-   *    the path that handles WebRTC streams (Google Meet, Zoom Web, etc.) and
-   *    silently caps any boost > 100% at 100% on those elements.
+   * Write `el.volume` and record the value so the upcoming `volumechange` event
+   * is recognized as ours and ignored by `enforceOnElement`.
    */
-  function applyToElement(el) {
-    if (!(el instanceof HTMLMediaElement)) return;
+  function writeVolume(el, v) {
     try {
-      if (routed.has(el)) {
-        if (el.volume !== 1) el.volume = 1;
-      } else {
-        const v = Math.max(0, Math.min(1, Number(pendingPercent) / 100));
-        if (Math.abs(el.volume - v) > 0.001) el.volume = v;
-      }
+      const meta = enforceMeta.get(el) || { lastEnforceAt: 0, expectedVolume: -1 };
+      meta.expectedVolume = v;
+      meta.lastEnforceAt = performance.now();
+      enforceMeta.set(el, meta);
+      el.volume = v;
     } catch {
       // Some sites lock down setters via Object.defineProperty; nothing we can do.
     }
+  }
+
+  /**
+   * Push the current `pendingPercent` to a single element. Active write — used
+   * when the slider moves or when we first track an element. Skipped at default
+   * 100% on unrouted elements so we don't override the page's natural volume.
+   */
+  function applyToElement(el) {
+    if (!(el instanceof HTMLMediaElement)) return;
+    if (routed.has(el)) {
+      if (el.volume !== 1) writeVolume(el, 1);
+      return;
+    }
+    if (Number(pendingPercent) === DEFAULT_PERCENT) return;
+    const v = desiredVolumeFor(el);
+    if (Math.abs(el.volume - v) > 0.001) writeVolume(el, v);
+  }
+
+  /**
+   * `volumechange` handler. If the page changed the element's volume away from
+   * what we want and we're currently asserting (non-default), put it back.
+   * Inert at default 100% so non-extension volume control on the page works.
+   */
+  function enforceOnElement(el) {
+    if (!(el instanceof HTMLMediaElement)) return;
+    if (Number(pendingPercent) === DEFAULT_PERCENT && !routed.has(el)) return;
+
+    const desired = desiredVolumeFor(el);
+    if (Math.abs(el.volume - desired) <= 0.001) return;
+
+    const meta = enforceMeta.get(el);
+    if (meta) {
+      // The event is for our own write — Math.abs check above already covered the
+      // happy path; this guards a race where two writes interleave.
+      if (Math.abs(el.volume - meta.expectedVolume) <= 0.001) return;
+      // Throttle: never re-correct more often than once per ENFORCE_THROTTLE_MS.
+      const now = performance.now();
+      if (now - meta.lastEnforceAt < ENFORCE_THROTTLE_MS) return;
+    }
+
+    writeVolume(el, desired);
   }
 
   function applyGainFromPending() {
@@ -93,6 +150,10 @@
     if (trackedKeys.has(el)) return;
     trackedKeys.add(el);
     tracked.add(new WeakRef(el));
+    el.addEventListener("volumechange", () => enforceOnElement(el), {
+      capture: true,
+      passive: true,
+    });
   }
 
   /**
@@ -154,8 +215,6 @@
   function setVolumePercent(percent) {
     pendingPercent = Number(percent);
 
-    // Native `el.volume` works pre-activation, works on WebRTC, and doesn't
-    // trigger any autoplay-policy warnings. Always do this.
     applyToAll();
 
     if (audioUnlocked && isBoost()) {
