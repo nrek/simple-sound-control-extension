@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-accent="purple">
+<html lang="en" data-theme="dark" data-accent="purple">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -108,6 +108,24 @@
           </button>
           <h2 class="settings-screen-title">Settings</h2>
         </header>
+
+        <section class="settings-block" aria-labelledby="theme-heading">
+          <h3 id="theme-heading" class="settings-heading">Theme</h3>
+          <div class="theme-toggle" role="group" aria-labelledby="theme-heading">
+            <button
+              type="button"
+              class="theme-option is-active"
+              id="theme-dark"
+              data-theme="dark"
+              aria-pressed="true"
+            >
+              Dark
+            </button>
+            <button type="button" class="theme-option" id="theme-light" data-theme="light" aria-pressed="false">
+              Light
+            </button>
+          </div>
+        </section>
 
         <section class="settings-block" aria-labelledby="accent-heading">
           <h3 id="accent-heading" class="settings-heading">Accent color</h3>

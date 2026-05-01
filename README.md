@@ -39,7 +39,7 @@ Icons `icon-16.png` … `icon-128.png` live in **`src/`** and are copied into ea
 - **0–400%** volume slider with live preview on the page  
 - **Quick actions**: Mute, 20%, 50%, 100% (optional highlight for last preset)  
 - **Save** boosts **per tab** and/or **per site (origin)** when you enable those options  
-- **Accent theming** (purple, blue, teal, and more)  
+- **Light / Dark** popup theme (Settings); **accent** colors (purple, blue, teal, and more)  
 - **Toolbar icon** shows an accent dot when the effective level is not 100%  
 - **Saved volume states** list in Settings (delete rows with trash icon); tab entries drop when the tab closes  
 

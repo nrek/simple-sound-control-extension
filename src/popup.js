@@ -1,5 +1,6 @@
 (() => {
   const STORAGE_KEYS = {
+    theme: "ssc_theme",
     accent: "ssc_accent",
     saveToTab: "ssc_save_to_tab",
     saveToUrl: "ssc_save_to_url",
@@ -21,6 +22,8 @@
     "gray",
   ]);
 
+  const THEMES = new Set(["dark", "light"]);
+
   const QUICK_PRESETS = new Set(["0", "20", "50", "100"]);
 
   const CONTENT_MSG_VOLUME = "SSC_SET_VOLUME";
@@ -36,6 +39,7 @@
   const settingsOpen = document.getElementById("settings-open");
   const settingsClose = document.getElementById("settings-close");
   const accentSwatches = document.querySelectorAll(".accent-swatch");
+  const themeButtons = document.querySelectorAll(".theme-option");
   const chipButtons = document.querySelectorAll(".chip[data-preset]");
   const savedSubtabs = document.querySelectorAll(".subtab[data-saved-panel]");
   const panelTabs = document.getElementById("panel-saved-tabs");
@@ -83,6 +87,16 @@
     slider.setAttribute("aria-valuenow", String(v));
     slider.setAttribute("aria-valuetext", `${v} percent`);
     setSliderVisualPercent((v / 400) * 100);
+  }
+
+  function applyTheme(theme) {
+    const t = THEMES.has(theme) ? theme : "dark";
+    document.documentElement.setAttribute("data-theme", t);
+    themeButtons.forEach((btn) => {
+      const active = btn.getAttribute("data-theme") === t;
+      btn.classList.toggle("is-active", active);
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+    });
   }
 
   function applyAccent(accent) {
@@ -394,6 +408,15 @@
     });
   });
 
+  themeButtons.forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const theme = btn.getAttribute("data-theme");
+      if (!THEMES.has(theme)) return;
+      applyTheme(theme);
+      await storageSet({ [STORAGE_KEYS.theme]: theme });
+    });
+  });
+
   saveToTab.addEventListener("change", () => {
     storageSet({ [STORAGE_KEYS.saveToTab]: saveToTab.checked });
   });
@@ -442,6 +465,7 @@
 
   (async function init() {
     const data = await storageGet([
+      STORAGE_KEYS.theme,
       STORAGE_KEYS.accent,
       STORAGE_KEYS.saveToTab,
       STORAGE_KEYS.saveToUrl,
@@ -449,6 +473,9 @@
       STORAGE_KEYS.savedTabVolumes,
       STORAGE_KEYS.savedUrlVolumes,
     ]);
+
+    const theme = THEMES.has(data[STORAGE_KEYS.theme]) ? data[STORAGE_KEYS.theme] : "dark";
+    applyTheme(theme);
 
     const accent = ACCENTS.has(data[STORAGE_KEYS.accent]) ? data[STORAGE_KEYS.accent] : "purple";
     applyAccent(accent);
