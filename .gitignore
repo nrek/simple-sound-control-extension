@@ -1,3 +1,7 @@
+# Build output (run `npm run build`)
+dist/
+node_modules/
+
 # OS
 .DS_Store
 Thumbs.db
