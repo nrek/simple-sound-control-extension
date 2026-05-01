@@ -361,7 +361,15 @@ chrome.tabs.onRemoved.addListener((tabId) => {
  * @returns {Promise<boolean>} true once an offscreen document hosting the
  * audio chain exists and is reachable. False if the API isn't available
  * (Firefox) or the user hasn't granted the optional permission.
+ *
+ * The `SSC_FIREFOX_STRIP_*` markers are honored by `scripts/build.mjs`: the
+ * Chrome dist gets the real offscreen-document orchestration, the Firefox
+ * dist gets a hard `false` stub (so no `chrome.offscreen.*` /
+ * `chrome.runtime.getContexts` reference reaches the AMO static analyzer).
+ * Tab Capture mode is then inert on Firefox — `engageCapture` short-circuits
+ * on `if (!ready) return ...`.
  */
+// SSC_FIREFOX_STRIP_BEGIN
 async function ensureOffscreen() {
   if (!chrome.offscreen || !chrome.offscreen.createDocument) return false;
   if (!chrome.runtime?.getContexts) {
@@ -409,8 +417,14 @@ async function ensureOffscreen() {
   offscreenCreatingPromise = null;
   return true;
 }
+// SSC_FIREFOX_STRIP_ELSE
+async function ensureOffscreen() {
+  return false;
+}
+// SSC_FIREFOX_STRIP_END
 
 /** Close the offscreen document if no captures remain. Cheap to call often. */
+// SSC_FIREFOX_STRIP_BEGIN
 async function maybeCloseOffscreen() {
   if (!chrome.offscreen?.closeDocument) return;
   if (capturedTabs.size > 0) return;
@@ -427,6 +441,9 @@ async function maybeCloseOffscreen() {
     // ignore
   }
 }
+// SSC_FIREFOX_STRIP_ELSE
+async function maybeCloseOffscreen() {}
+// SSC_FIREFOX_STRIP_END
 
 async function sendOffscreenStart(tabId, streamId, percent) {
   try {

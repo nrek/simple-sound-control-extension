@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-05-01
+
+### Fixed (Firefox AMO submission warnings)
+
+- **Manifest:**
+  - Removed `background.service_worker` from the Firefox manifest. Firefox ignores this key and was warning about it on every upload; `background.scripts` (which Firefox does honor) is what we actually use. Chrome continues to use `background.service_worker` from its own manifest template.
+  - Bumped `browser_specific_settings.gecko.strict_min_version` from `121.0` to `140.0`. The previous value was inconsistent with `data_collection_permissions` (added in Firefox 140 / Firefox for Android 142), which AMO flagged as a contradiction.
+
+- **API references:** Added a small build-time preprocessor (`scripts/build.mjs`) that strips Chrome-only API call sites from the Firefox dist. Markers in source: `// SSC_FIREFOX_STRIP_BEGIN` / `// SSC_FIREFOX_STRIP_ELSE` / `// SSC_FIREFOX_STRIP_END`. The Chrome dist keeps the original code, the Firefox dist gets the ELSE replacement (or nothing, if no ELSE is present). Used to silence 15 "API not implemented in Firefox" warnings from `chrome.tabCapture.getMediaStreamId`, `chrome.offscreen.createDocument` / `closeDocument`, and `chrome.runtime.getContexts`. Tab Capture mode is now genuinely absent from the Firefox bundle (not just runtime-guarded), and the entire `offscreen.html` / `offscreen.js` pair is omitted from the Firefox dist via a `FIREFOX_OMIT_FILES` allowlist.
+
 ## [0.1.10] - 2026-05-01
 
 ### Removed

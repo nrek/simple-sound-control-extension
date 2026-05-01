@@ -11,11 +11,22 @@
     tabCaptureEnabled: "ssc_tab_capture_enabled",
   };
 
-  /** Tab Capture API + the `permissions` API are both Chrome-only. */
-  const HAS_TAB_CAPTURE =
+  /**
+   * Tab Capture API + the `permissions` API are both Chrome-only. Defaults
+   * to `false`; the assignment below is wrapped in `SSC_FIREFOX_STRIP_*`
+   * markers honored by `scripts/build.mjs`. The Chrome dist keeps the real
+   * feature-detection; the Firefox dist drops the assignment entirely so
+   * no `chrome.tabCapture.*` reference reaches the AMO static analyzer.
+   * `let` (vs. `const`) is a small price for never having two parallel
+   * declarations of the same name visible to the IDE / TS service.
+   */
+  let HAS_TAB_CAPTURE = false;
+  // SSC_FIREFOX_STRIP_BEGIN
+  HAS_TAB_CAPTURE =
     typeof chrome !== "undefined" &&
     Boolean(chrome.tabCapture?.getMediaStreamId) &&
     Boolean(chrome.permissions?.request);
+  // SSC_FIREFOX_STRIP_END
 
   const TAB_CAPTURE_PERMISSIONS = { permissions: ["tabCapture", "offscreen"] };
 
@@ -301,11 +312,15 @@
       return Boolean(r?.ok);
     }
     let streamId;
+    // SSC_FIREFOX_STRIP_BEGIN
     try {
       streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
     } catch {
       return false;
     }
+    // SSC_FIREFOX_STRIP_ELSE
+    streamId = "";
+    // SSC_FIREFOX_STRIP_END
     if (!streamId) return false;
     const r = await bgSend({
       type: MSG_TAB_CAPTURE_ENGAGE,

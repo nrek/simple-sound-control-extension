@@ -31,6 +31,90 @@ async function exists(p) {
   }
 }
 
+/**
+ * Files that exist only to support Chrome's Tab Capture mode (offscreen
+ * document + its bootstrap). Firefox has no `chrome.offscreen` / `tabCapture`
+ * API surface, so these get omitted from the Firefox dist entirely.
+ */
+const FIREFOX_OMIT_FILES = new Set(["offscreen.html", "offscreen.js"]);
+
+const PREPROCESS_EXTS = new Set([".js", ".mjs", ".cjs", ".html"]);
+
+/**
+ * Per-target source preprocessor. Recognizes three marker forms:
+ *
+ *   // SSC_FIREFOX_STRIP_BEGIN
+ *   ... Chrome-only code ...
+ *   // SSC_FIREFOX_STRIP_ELSE         ← optional
+ *   ... Firefox replacement ...
+ *   // SSC_FIREFOX_STRIP_END
+ *
+ * The Chrome target keeps the BEGIN..ELSE region (or BEGIN..END when there's
+ * no ELSE) and drops the ELSE..END region. The Firefox target does the
+ * inverse — drops BEGIN..ELSE, keeps ELSE..END (or, with no ELSE, drops
+ * BEGIN..END entirely). Marker lines themselves are always removed.
+ *
+ * HTML files use `<!-- SSC_FIREFOX_STRIP_BEGIN -->` etc. — the preprocessor
+ * matches the token, not the surrounding comment delimiters.
+ */
+function preprocessSource(text, target) {
+  if (!text.includes("SSC_FIREFOX_STRIP_")) return text;
+  const lines = text.split(/\r?\n/);
+  const kept = [];
+  let region = "outside"; // outside | beforeElse | afterElse
+  for (const ln of lines) {
+    if (region === "outside") {
+      if (ln.includes("SSC_FIREFOX_STRIP_BEGIN")) {
+        region = "beforeElse";
+        continue;
+      }
+      kept.push(ln);
+      continue;
+    }
+    if (region === "beforeElse") {
+      if (ln.includes("SSC_FIREFOX_STRIP_ELSE")) {
+        region = "afterElse";
+        continue;
+      }
+      if (ln.includes("SSC_FIREFOX_STRIP_END")) {
+        region = "outside";
+        continue;
+      }
+      // Chrome keeps the "primary" region, Firefox drops it.
+      if (target === "chrome") kept.push(ln);
+      continue;
+    }
+    if (region === "afterElse") {
+      if (ln.includes("SSC_FIREFOX_STRIP_END")) {
+        region = "outside";
+        continue;
+      }
+      // Firefox keeps the "else" region, Chrome drops it.
+      if (target === "firefox") kept.push(ln);
+      continue;
+    }
+  }
+  return kept.join("\n");
+}
+
+/**
+ * Walk `dir` recursively and apply `transform` to every regular file. Used
+ * after the initial `fs.cp` to either preprocess source files or remove
+ * Chrome-only assets from the Firefox dist.
+ */
+async function walkAndTransform(dir, transform) {
+  for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      await walkAndTransform(full, transform);
+      continue;
+    }
+    if (entry.isFile()) {
+      await transform(full, entry.name);
+    }
+  }
+}
+
 function zipDir(srcDir, outFile) {
   return new Promise((resolve, reject) => {
     const output = createWriteStream(outFile);
@@ -72,6 +156,20 @@ async function build() {
   for (const { subdir, template, ext } of targets) {
     const out = path.join(distDir, subdir);
     await fs.cp(srcDir, out, { recursive: true });
+
+    await walkAndTransform(out, async (full, name) => {
+      if (subdir === "firefox" && FIREFOX_OMIT_FILES.has(name)) {
+        await fs.rm(full);
+        return;
+      }
+      const fileExt = path.extname(name);
+      if (!PREPROCESS_EXTS.has(fileExt)) return;
+      const original = await fs.readFile(full, "utf8");
+      const next = preprocessSource(original, subdir);
+      if (next !== original) {
+        await fs.writeFile(full, next, "utf8");
+      }
+    });
 
     const templatePath = path.join(manifestsDir, template);
     const manifest = await readJson(templatePath);
