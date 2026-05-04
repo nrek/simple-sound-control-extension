@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-05-04
+
+### Fixed
+
+- **Meet volume no longer resets to 100% when switching tabs.** Meet's JavaScript resets `el.volume` to 1.0 on focus changes and internal timers. Added a `volumechange` enforcer that re-asserts the SSC level — but only for `srcObject` (WebRTC) elements. Regular media elements (YouTube, Reddit, etc.) still go through Web Audio only and have no `volumechange` listener. The enforcer uses `srcObjectExpected` to recognize its own writes and avoid loops.
+
 ## [0.2.1] - 2026-05-04
 
 ### Fixed

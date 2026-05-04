@@ -43,6 +43,8 @@
    * property, so there's no "fighting the page" problem.
    */
   const srcObjectElements = new WeakSet();
+  /** Prevents our own el.volume write from re-triggering the enforcer. */
+  const srcObjectExpected = new WeakMap();
 
   const trackedKeys = new WeakSet();
   /** @type {Set<WeakRef<HTMLMediaElement>>} */
@@ -99,6 +101,7 @@
     if (!audioUnlocked) return;
     if (el.srcObject) {
       srcObjectElements.add(el);
+      attachSrcObjectEnforcer(el);
       applySrcObjectVolume(el);
       return;
     }
@@ -123,12 +126,43 @@
    */
   function applySrcObjectVolume(el) {
     if (passthroughMode) return;
+    if (Number(pendingPercent) === DEFAULT_PERCENT) return;
     const v = Math.max(0, Math.min(1, Number(pendingPercent) / 100));
     try {
+      srcObjectExpected.set(el, v);
       el.volume = v;
     } catch {
       // locked setter
     }
+  }
+
+  /**
+   * `volumechange` enforcer for srcObject elements only. Meet resets
+   * `el.volume` to 1.0 on tab focus changes and internal timers. Since
+   * WebRTC elements have no user-facing volume slider tied to `el.volume`,
+   * re-asserting our value doesn't interfere with any visible page control.
+   */
+  function enforceSrcObjectVolume(el) {
+    if (passthroughMode) return;
+    if (!srcObjectElements.has(el)) return;
+    if (Number(pendingPercent) === DEFAULT_PERCENT) return;
+    const desired = Math.max(0, Math.min(1, Number(pendingPercent) / 100));
+    if (Math.abs(el.volume - desired) <= 0.001) return;
+    const expected = srcObjectExpected.get(el);
+    if (expected !== undefined && Math.abs(el.volume - expected) <= 0.001) return;
+    try {
+      srcObjectExpected.set(el, desired);
+      el.volume = desired;
+    } catch {
+      // locked setter
+    }
+  }
+
+  function attachSrcObjectEnforcer(el) {
+    el.addEventListener("volumechange", () => enforceSrcObjectVolume(el), {
+      capture: true,
+      passive: true,
+    });
   }
 
   function applySrcObjectVolumeAll() {
@@ -184,10 +218,9 @@
     if (pendingPercent !== DEFAULT_PERCENT && audioUnlocked) {
       tryRoute(el);
     }
-    // srcObject can be assigned after the element is created. If it
-    // wasn't srcObject when we first saw it but is now, pick it up.
     if (el.srcObject && !srcObjectElements.has(el) && !routed.has(el) && !routeFailed.has(el)) {
       srcObjectElements.add(el);
+      attachSrcObjectEnforcer(el);
       applySrcObjectVolume(el);
     }
   }
