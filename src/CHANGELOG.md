@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-04
+
+### Fixed
+
+- **Google Meet (and other WebRTC apps) volume control restored.** 0.2.0 dropped *all* `el.volume` writes, which meant `srcObject`-backed elements (WebRTC) became uncontrollable — `createMediaElementSource` can't route them through Web Audio. Now there are two distinct paths:
+  - **Regular media** (`<video src="...">`, `<audio>`, MSE, etc.): routed through Web Audio `GainNode`. `el.volume` is never written. Page controls (YouTube slider, Reddit player) work without interference.
+  - **`srcObject` / WebRTC elements** (Meet, Zoom, Discord): `el.volume` is written directly as a fallback. This is safe because WebRTC elements don't have a user-facing volume slider tied to `el.volume` — per-participant controls in these apps work through the WebRTC mixer, not the DOM property.
+- Boost >100% is not available via `el.volume` (clamped to 0–1); Tab Capture mode covers WebRTC boost.
+
 ## [0.2.0] - 2026-05-01
 
 ### Changed (BREAKING — architecture)

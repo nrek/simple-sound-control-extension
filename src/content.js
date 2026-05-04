@@ -29,11 +29,20 @@
   const routed = new WeakSet();
 
   /**
-   * Elements where `createMediaElementSource` threw (CORS, srcObject /
-   * WebRTC, or browser-internal restrictions). We skip these on future
-   * route attempts. Tab Capture mode covers them instead.
+   * Elements where `createMediaElementSource` threw for non-srcObject
+   * reasons (CORS, browser-internal restrictions). Permanently skipped.
    */
   const routeFailed = new WeakSet();
+
+  /**
+   * `srcObject`-backed elements (WebRTC — Meet, Zoom, Discord). These
+   * can't be routed through Web Audio, so we fall back to writing
+   * `el.volume` directly. This is safe because WebRTC elements don't
+   * have a user-facing volume slider tied to `el.volume` — the page's
+   * per-participant controls work through the WebRTC mixer, not the DOM
+   * property, so there's no "fighting the page" problem.
+   */
+  const srcObjectElements = new WeakSet();
 
   const trackedKeys = new WeakSet();
   /** @type {Set<WeakRef<HTMLMediaElement>>} */
@@ -86,9 +95,11 @@
     if (!(el instanceof HTMLMediaElement)) return;
     if (routed.has(el)) return;
     if (routeFailed.has(el)) return;
+    if (srcObjectElements.has(el)) return;
     if (!audioUnlocked) return;
     if (el.srcObject) {
-      routeFailed.add(el);
+      srcObjectElements.add(el);
+      applySrcObjectVolume(el);
       return;
     }
     ensureGraph();
@@ -99,6 +110,32 @@
       routed.add(el);
     } catch {
       routeFailed.add(el);
+    }
+  }
+
+  /**
+   * Fallback for srcObject (WebRTC) elements: write `el.volume` directly.
+   * Clamped to 0–1 (no boost possible via el.volume; boost requires Tab
+   * Capture mode for WebRTC). This is the only code path that writes
+   * `el.volume`, and it only fires for elements the page itself created
+   * with a MediaStream source — never for regular `<video>` / `<audio>`
+   * with src/source tags (those go through Web Audio).
+   */
+  function applySrcObjectVolume(el) {
+    if (passthroughMode) return;
+    const v = Math.max(0, Math.min(1, Number(pendingPercent) / 100));
+    try {
+      el.volume = v;
+    } catch {
+      // locked setter
+    }
+  }
+
+  function applySrcObjectVolumeAll() {
+    for (const ref of tracked) {
+      const el = ref.deref();
+      if (!el || !el.isConnected) continue;
+      if (srcObjectElements.has(el)) applySrcObjectVolume(el);
     }
   }
 
@@ -119,6 +156,7 @@
   function setVolumePercent(percent) {
     pendingPercent = Number(percent);
     applyGain();
+    applySrcObjectVolumeAll();
     if (pendingPercent !== DEFAULT_PERCENT && audioUnlocked) {
       routeAll();
       scan(document);
@@ -133,6 +171,7 @@
       routeAll();
       scan(document);
       applyGain();
+      applySrcObjectVolumeAll();
     }
     for (const ev of ACTIVATION_EVENTS) {
       window.removeEventListener(ev, onFirstUserActivation, true);
@@ -144,6 +183,12 @@
     track(el);
     if (pendingPercent !== DEFAULT_PERCENT && audioUnlocked) {
       tryRoute(el);
+    }
+    // srcObject can be assigned after the element is created. If it
+    // wasn't srcObject when we first saw it but is now, pick it up.
+    if (el.srcObject && !srcObjectElements.has(el) && !routed.has(el) && !routeFailed.has(el)) {
+      srcObjectElements.add(el);
+      applySrcObjectVolume(el);
     }
   }
 
