@@ -29,22 +29,41 @@
   const routed = new WeakSet();
 
   /**
-   * Elements where `createMediaElementSource` threw for non-srcObject
-   * reasons (CORS, browser-internal restrictions). Permanently skipped.
+   * Elements controlled via direct `el.volume` writes instead of the
+   * Web Audio gain chain. Three populations land here:
+   *
+   *   1. `srcObject` (WebRTC) elements — Meet, Zoom, Discord. These
+   *      can't be routed through `createMediaElementSource` at all.
+   *   2. Cross-origin media without `crossorigin="anonymous"` — Reddit,
+   *      many CDN-backed players. `createMediaElementSource` would
+   *      succeed but produce silence (Web Audio CORS taint), so we
+   *      avoid the call and write `el.volume` directly.
+   *   3. Elements where the page already owns the Web Audio source
+   *      (our `createMediaElementSource` throws `InvalidStateError`),
+   *      plus any other rare failure from that call — `el.volume` is
+   *      a strictly safer fallback than going inert.
+   *
+   * For (2) and (3) we lose the "el.volume × SSC = effective" composition
+   * the gain-node path gives us — SSC's slider value drives `el.volume`
+   * directly and the page slider becomes a no-op while SSC is non-default.
+   * The `volumechange` enforcer keeps SSC's level pinned against page
+   * resets (Meet, YouTube on focus changes, etc).
+   *
+   * Boost > 100% is not available on the fallback path (`el.volume` is
+   * clamped to 0–1 by the spec). Tab Capture mode covers boost for these
+   * elements.
    */
-  const routeFailed = new WeakSet();
+  const volumeFallback = new WeakSet();
 
   /**
-   * `srcObject`-backed elements (WebRTC — Meet, Zoom, Discord). These
-   * can't be routed through Web Audio, so we fall back to writing
-   * `el.volume` directly. This is safe because WebRTC elements don't
-   * have a user-facing volume slider tied to `el.volume` — the page's
-   * per-participant controls work through the WebRTC mixer, not the DOM
-   * property, so there's no "fighting the page" problem.
+   * Last known page-driven `el.volume` for each fallback element. Seeded
+   * at `enterVolumeFallback` and refreshed by the enforcer whenever the
+   * page writes a value we then override. On release (SSC returns to
+   * 100% or Tab Capture mode engages), we write this value back so the
+   * page's last intent is preserved instead of leaving the element pinned
+   * at whatever SSC last wrote.
    */
-  const srcObjectElements = new WeakSet();
-  /** Prevents our own el.volume write from re-triggering the enforcer. */
-  const srcObjectExpected = new WeakMap();
+  const volumeFallbackOriginal = new WeakMap();
 
   const trackedKeys = new WeakSet();
   /** @type {Set<WeakRef<HTMLMediaElement>>} */
@@ -88,21 +107,46 @@
   }
 
   /**
+   * Decide whether `createMediaElementSource(el)` can route this
+   * element's audio through our gain chain without silencing it.
+   *
+   * Per the Web Audio spec, when the element's media data is cross-origin
+   * and the element has not opted into CORS via the `crossorigin`
+   * attribute, `createMediaElementSource` taints the source — the call
+   * succeeds but the node outputs silence. We have to detect this
+   * up front because the silencing is one-way: once tainted, the
+   * element is silent for the rest of its life regardless of whether
+   * we disconnect.
+   */
+  function canRouteViaWebAudio(el) {
+    if (el.crossOrigin !== null) return true;
+    const src = el.currentSrc || el.src;
+    if (!src) return false;
+    if (src.startsWith("blob:") || src.startsWith("data:")) return false;
+    try {
+      return new URL(src, location.href).origin === location.origin;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Route an element through our Web Audio gain chain. After this call
    * the element's audio flows through: el → MediaElementSource → masterGain
    * → ctx.destination. `el.volume` still works as a pre-gain attenuator
-   * controlled entirely by the page — we never write to it.
+   * controlled entirely by the page — we never write to it on this path.
+   *
+   * Elements that can't safely route (srcObject, cross-origin without
+   * CORS opt-in, or already claimed by the page's own Web Audio graph)
+   * are sent down the `volumeFallback` path instead.
    */
   function tryRoute(el) {
     if (!(el instanceof HTMLMediaElement)) return;
     if (routed.has(el)) return;
-    if (routeFailed.has(el)) return;
-    if (srcObjectElements.has(el)) return;
+    if (volumeFallback.has(el)) return;
     if (!audioUnlocked) return;
-    if (el.srcObject) {
-      srcObjectElements.add(el);
-      attachSrcObjectEnforcer(el);
-      applySrcObjectVolume(el);
+    if (el.srcObject || !canRouteViaWebAudio(el)) {
+      enterVolumeFallback(el);
       return;
     }
     ensureGraph();
@@ -112,24 +156,62 @@
       src.connect(masterGain);
       routed.add(el);
     } catch {
-      routeFailed.add(el);
+      // Most commonly `InvalidStateError` (page already has a
+      // `MediaElementSource` on this element). The element's audio
+      // graph is now owned by the page; we can still attenuate via
+      // `el.volume`.
+      enterVolumeFallback(el);
+    }
+  }
+
+  function enterVolumeFallback(el) {
+    if (volumeFallback.has(el)) return;
+    try {
+      const initial = Number(el.volume);
+      volumeFallbackOriginal.set(
+        el,
+        Number.isFinite(initial) ? Math.max(0, Math.min(1, initial)) : 1
+      );
+    } catch {
+      volumeFallbackOriginal.set(el, 1);
+    }
+    volumeFallback.add(el);
+    attachVolumeFallbackEnforcer(el);
+    applyVolumeFallback(el);
+  }
+
+  function releaseVolumeFallback(el) {
+    const orig = volumeFallbackOriginal.get(el);
+    const v =
+      orig !== undefined && Number.isFinite(orig)
+        ? Math.max(0, Math.min(1, orig))
+        : 1;
+    try {
+      el.volume = v;
+    } catch {
+      // locked setter
+    }
+  }
+
+  function releaseVolumeFallbackAll() {
+    for (const ref of tracked) {
+      const el = ref.deref();
+      if (!el || !el.isConnected) continue;
+      if (volumeFallback.has(el)) releaseVolumeFallback(el);
     }
   }
 
   /**
-   * Fallback for srcObject (WebRTC) elements: write `el.volume` directly.
-   * Clamped to 0–1 (no boost possible via el.volume; boost requires Tab
-   * Capture mode for WebRTC). This is the only code path that writes
-   * `el.volume`, and it only fires for elements the page itself created
-   * with a MediaStream source — never for regular `<video>` / `<audio>`
-   * with src/source tags (those go through Web Audio).
+   * Write our gain percent into `el.volume` directly. Clamped to 0–1 —
+   * boost (>100%) is unavailable on this path; Tab Capture mode handles
+   * boost for elements that can't go through the Web Audio gain node.
+   * Only fires when SSC is non-default; at 100% we leave the page alone.
    */
-  function applySrcObjectVolume(el) {
+  function applyVolumeFallback(el) {
     if (passthroughMode) return;
     if (Number(pendingPercent) === DEFAULT_PERCENT) return;
     const v = Math.max(0, Math.min(1, Number(pendingPercent) / 100));
     try {
-      srcObjectExpected.set(el, v);
       el.volume = v;
     } catch {
       // locked setter
@@ -137,46 +219,56 @@
   }
 
   /**
-   * `volumechange` enforcer for srcObject elements only. Meet resets
-   * `el.volume` to 1.0 on tab focus changes and internal timers. Since
-   * WebRTC elements have no user-facing volume slider tied to `el.volume`,
-   * re-asserting our value doesn't interfere with any visible page control.
+   * `volumechange` enforcer for fallback-path elements. Three jobs:
+   *
+   *   - Re-assert the SSC level when the page tries to override it
+   *     (Meet's auto-reset, slider drags, ad boundaries, etc).
+   *   - Track the page's most recent `el.volume` intent so we can
+   *     restore it on release (SSC → 100% or Tab Capture engage).
+   *   - Stay inert while passthrough is on or SSC is at default, but
+   *     still update the intent snapshot so the next release uses the
+   *     freshest page value.
+   *
+   * The `|el.volume - desired|` check is the loop guard: our own writes
+   * always land at `desired`, so they short-circuit here and never
+   * re-trigger.
    */
-  function enforceSrcObjectVolume(el) {
-    if (passthroughMode) return;
-    if (!srcObjectElements.has(el)) return;
-    if (Number(pendingPercent) === DEFAULT_PERCENT) return;
+  function enforceVolumeFallback(el) {
+    if (!volumeFallback.has(el)) return;
+    // Inert regimes: capture page-driven writes as the new intent and bail.
+    if (passthroughMode || Number(pendingPercent) === DEFAULT_PERCENT) {
+      volumeFallbackOriginal.set(el, Number(el.volume));
+      return;
+    }
     const desired = Math.max(0, Math.min(1, Number(pendingPercent) / 100));
     if (Math.abs(el.volume - desired) <= 0.001) return;
-    const expected = srcObjectExpected.get(el);
-    if (expected !== undefined && Math.abs(el.volume - expected) <= 0.001) return;
+    // Page wrote something different — record it as their current intent
+    // (used on the next release), then re-assert SSC's level.
+    volumeFallbackOriginal.set(el, Number(el.volume));
     try {
-      srcObjectExpected.set(el, desired);
       el.volume = desired;
     } catch {
       // locked setter
     }
   }
 
-  function attachSrcObjectEnforcer(el) {
-    el.addEventListener("volumechange", () => enforceSrcObjectVolume(el), {
+  function attachVolumeFallbackEnforcer(el) {
+    el.addEventListener("volumechange", () => enforceVolumeFallback(el), {
       capture: true,
       passive: true,
     });
   }
 
-  function applySrcObjectVolumeAll() {
+  function applyVolumeFallbackAll() {
     for (const ref of tracked) {
       const el = ref.deref();
       if (!el || !el.isConnected) continue;
-      if (srcObjectElements.has(el)) applySrcObjectVolume(el);
+      if (volumeFallback.has(el)) applyVolumeFallback(el);
     }
   }
 
   function routeAll() {
     if (!audioUnlocked) return;
-    ensureGraph();
-    if (!ctx || !masterGain) return;
     for (const ref of tracked) {
       const el = ref.deref();
       if (!el || !el.isConnected) {
@@ -188,10 +280,23 @@
   }
 
   function setVolumePercent(percent) {
+    const prev = pendingPercent;
     pendingPercent = Number(percent);
     applyGain();
-    applySrcObjectVolumeAll();
-    if (pendingPercent !== DEFAULT_PERCENT && audioUnlocked) {
+    const goingToDefault = pendingPercent === DEFAULT_PERCENT;
+    const wasNonDefault = prev !== DEFAULT_PERCENT;
+    if (goingToDefault) {
+      // SSC returned to 100% — hand `el.volume` back to the page using
+      // its most recent intent so fallback elements don't stay pinned at
+      // SSC's last attenuation. Skipped during passthrough (we promised
+      // to stay inert there; the release already ran on passthrough entry).
+      if (wasNonDefault && !passthroughMode) {
+        releaseVolumeFallbackAll();
+      }
+      return;
+    }
+    applyVolumeFallbackAll();
+    if (audioUnlocked) {
       routeAll();
       scan(document);
     }
@@ -205,7 +310,7 @@
       routeAll();
       scan(document);
       applyGain();
-      applySrcObjectVolumeAll();
+      applyVolumeFallbackAll();
     }
     for (const ev of ACTIVATION_EVENTS) {
       window.removeEventListener(ev, onFirstUserActivation, true);
@@ -217,11 +322,6 @@
     track(el);
     if (pendingPercent !== DEFAULT_PERCENT && audioUnlocked) {
       tryRoute(el);
-    }
-    if (el.srcObject && !srcObjectElements.has(el) && !routed.has(el) && !routeFailed.has(el)) {
-      srcObjectElements.add(el);
-      attachSrcObjectEnforcer(el);
-      applySrcObjectVolume(el);
     }
   }
 
@@ -287,7 +387,13 @@
       const next = Boolean(msg.enabled);
       const wasOn = passthroughMode;
       passthroughMode = next;
-      if (wasOn && !next) {
+      if (!wasOn && next) {
+        // Entering passthrough: release `el.volume` holds so the offscreen
+        // gain in Tab Capture mode is the sole attenuator. Without this,
+        // a residual SSC-written value (e.g. 0.2 on Reddit) would compose
+        // with the offscreen gain and double-attenuate the captured tab.
+        releaseVolumeFallbackAll();
+      } else if (wasOn && !next) {
         pullResolvedVolume();
       }
       sendResponse({ ok: true, passthroughMode });
