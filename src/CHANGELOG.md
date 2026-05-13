@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-05-13
+
 ### Changed
 
 - **Chrome now prefers Tab Capture for non-100% tab volume by default.** The popup attempts the whole-tab audio path before sending content-script volume updates, so sites like Reddit and YouTube are less likely to have their own media controls pinned, fought, or routed through a fragile per-element path. If Chrome permission is denied or Tab Capture is unavailable, SSC falls back to the existing content-script behavior.
