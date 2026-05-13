@@ -1,4 +1,5 @@
 (() => {
+  const AUDIO_POLICY = window.SSCAudioPolicy;
   const STORAGE_KEYS = {
     theme: "ssc_theme",
     accent: "ssc_accent",
@@ -276,10 +277,6 @@
 
   /* --------------------------- Tab Capture helpers --------------------------- */
 
-  function isHttpxUrl(url) {
-    return typeof url === "string" && /^https?:\/\//i.test(url);
-  }
-
   async function bgSend(payload) {
     try {
       return await chrome.runtime.sendMessage(payload);
@@ -292,6 +289,22 @@
     if (!HAS_TAB_CAPTURE || tabId == null) return false;
     const r = await bgSend({ type: MSG_TAB_CAPTURE_QUERY, tabId });
     return Boolean(r?.captured);
+  }
+
+  async function ensureTabCapturePermission() {
+    if (!HAS_TAB_CAPTURE) return false;
+    try {
+      if (await chrome.permissions.contains(TAB_CAPTURE_PERMISSIONS)) return true;
+      const granted = await chrome.permissions.request(TAB_CAPTURE_PERMISSIONS);
+      if (!granted) {
+        tabCaptureEnabled = false;
+        if (tabCaptureToggle) tabCaptureToggle.checked = false;
+        await storageSet({ [STORAGE_KEYS.tabCaptureEnabled]: false });
+      }
+      return Boolean(granted);
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -311,6 +324,8 @@
       const r = await bgSend({ type: MSG_TAB_CAPTURE_GAIN, tabId, percent });
       return Boolean(r?.ok);
     }
+    const permitted = await ensureTabCapturePermission();
+    if (!permitted) return false;
     let streamId;
     // SSC_FIREFOX_STRIP_BEGIN
     try {
@@ -349,22 +364,30 @@
    * @param {number} percent
    */
   async function reconcileCaptureForActiveTab(percent) {
-    if (!HAS_TAB_CAPTURE) return;
-    if (!activeTabInfo?.id || !activeTabInfo.isHttpx) return;
+    const wantsCapture = AUDIO_POLICY.shouldUseTabCapture({
+      hasTabCapture: HAS_TAB_CAPTURE,
+      tabCaptureEnabled,
+      activeTabInfo,
+      percent,
+    });
+    if (!HAS_TAB_CAPTURE || !activeTabInfo?.id || !activeTabInfo.isHttpx) {
+      return { attempted: false, captured: false };
+    }
     if (!tabCaptureEnabled) {
       if (activeTabCaptured) {
         await releaseActiveTabCapture(activeTabInfo.id);
       }
-      return;
+      return { attempted: false, captured: false };
     }
     const v = Number(percent);
-    if (v === 100) {
+    if (!wantsCapture) {
       if (activeTabCaptured) {
         await releaseActiveTabCapture(activeTabInfo.id);
       }
-      return;
+      return { attempted: false, captured: false };
     }
-    await engageOrUpdateCapture(activeTabInfo.id, v);
+    const captured = await engageOrUpdateCapture(activeTabInfo.id, v);
+    return { attempted: true, captured };
   }
 
   /**
@@ -393,7 +416,22 @@
     const vol = await resolveVolumeForTab(t.id, t.url || "");
     slider.value = String(vol);
     updateFromSlider();
-    await pushVolumeToActiveTab(vol);
+    await applyVolumeToActiveTab(vol);
+  }
+
+  async function applyVolumeToActiveTab(percent) {
+    const capture = await reconcileCaptureForActiveTab(percent);
+    await persistScopedOverrides(percent);
+    await recordLiveVolumeForActiveTab(percent);
+    if (
+      AUDIO_POLICY.shouldPushContentVolume({
+        percent,
+        captureAttempted: capture.attempted,
+        captureSucceeded: capture.captured,
+      })
+    ) {
+      await pushVolumeToActiveTab(percent);
+    }
   }
 
   function showMainScreen() {
@@ -480,10 +518,7 @@
   slider.addEventListener("input", async () => {
     updateFromSlider();
     const v = Number(slider.value);
-    await persistScopedOverrides(v);
-    await pushVolumeToActiveTab(v);
-    await recordLiveVolumeForActiveTab(v);
-    await reconcileCaptureForActiveTab(v);
+    await applyVolumeToActiveTab(v);
     if (!suppressQuickPresetClear) {
       await setLastQuickPreset(null);
     }
@@ -496,10 +531,7 @@
       slider.value = btn.getAttribute("data-volume");
       updateFromSlider();
       const v = Number(slider.value);
-      await persistScopedOverrides(v);
-      await pushVolumeToActiveTab(v);
-      await recordLiveVolumeForActiveTab(v);
-      await reconcileCaptureForActiveTab(v);
+      await applyVolumeToActiveTab(v);
       await setLastQuickPreset(QUICK_PRESETS.has(preset) ? preset : null);
       requestAnimationFrame(() => {
         suppressQuickPresetClear = false;
@@ -645,19 +677,11 @@
     saveToUrl.checked = Boolean(data[STORAGE_KEYS.saveToUrl]);
 
     if (HAS_TAB_CAPTURE && tabCaptureToggle) {
-      // Reflect the saved preference but only if the optional permission is
-      // actually granted right now — the user could have revoked it between
-      // popup sessions via chrome://extensions.
-      let permissionGranted = false;
-      try {
-        permissionGranted = await chrome.permissions.contains(TAB_CAPTURE_PERMISSIONS);
-      } catch {
-        permissionGranted = false;
-      }
-      tabCaptureEnabled = Boolean(data[STORAGE_KEYS.tabCaptureEnabled]) && permissionGranted;
+      // Default to tab-level gain on Chrome. If permission has not been granted
+      // yet, Chrome will ask from the next user-gesture volume change.
+      tabCaptureEnabled = AUDIO_POLICY.resolveTabCapturePreference(data[STORAGE_KEYS.tabCaptureEnabled]);
       tabCaptureToggle.checked = tabCaptureEnabled;
-      if (tabCaptureEnabled !== Boolean(data[STORAGE_KEYS.tabCaptureEnabled])) {
-        // Storage drifted (permission was revoked); reconcile.
+      if (data[STORAGE_KEYS.tabCaptureEnabled] === undefined) {
         await storageSet({ [STORAGE_KEYS.tabCaptureEnabled]: tabCaptureEnabled });
       }
     }
@@ -670,17 +694,25 @@
       activeTabInfo = {
         id: t0.id,
         url: t0.url || "",
-        isHttpx: isHttpxUrl(t0.url || ""),
+        isHttpx: AUDIO_POLICY.isHttpxUrl(t0.url || ""),
       };
       activeTabCaptured = await queryActiveTabCaptured(t0.id);
     }
     slider.value = String(effective);
     updateFromSlider();
-    await pushVolumeToActiveTab(effective);
     // Popup open is itself a user-gesture context, so this is a legal place to
     // call `getMediaStreamId` if Tab Capture mode is on and the resolved level
     // already differs from default — gives the seamless engage-on-open feel.
-    await reconcileCaptureForActiveTab(effective);
+    const capture = await reconcileCaptureForActiveTab(effective);
+    if (
+      AUDIO_POLICY.shouldPushContentVolume({
+        percent: effective,
+        captureAttempted: capture.attempted,
+        captureSucceeded: capture.captured,
+      })
+    ) {
+      await pushVolumeToActiveTab(effective);
+    }
     try {
       await chrome.runtime.sendMessage({ type: MSG_REFRESH_TOOLBAR });
     } catch {

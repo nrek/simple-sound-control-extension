@@ -4,6 +4,7 @@
   "version": "0.2.3",
   "description": "Per-tab volume boost (Chrome + Firefox MV3); shared src, dist outputs",
   "scripts": {
+    "test": "node --test tests/*.test.js",
     "build": "node scripts/build.mjs",
     "build:unpacked": "node scripts/build.mjs --no-package",
     "package": "node scripts/build.mjs"
