@@ -123,17 +123,14 @@ function accentHexFromKey(key) {
 }
 
 /**
- * Tab-specific override beats origin; else origin; else 100.
- * @param {number} tabId
+ * Pinned origin beats default. Persistent tab-specific overrides are legacy
+ * and intentionally ignored; live per-tab volume still wins in
+ * `resolveEffectiveVolume` for the current browser session.
+ *
  * @param {string} frameOrigin
  */
-function resolveVolumeFromLists(tabsList, urlsList, tabId, frameOrigin) {
-  const tabs = Array.isArray(tabsList) ? tabsList : [];
+function resolveVolumeFromLists(_tabsList, urlsList, _tabId, frameOrigin) {
   const urls = Array.isArray(urlsList) ? urlsList : [];
-
-  const tabRow = tabs.find((row) => Number(row.tabId) === Number(tabId));
-  const tabVol = clampVolume(tabRow?.volume);
-  if (tabVol !== null) return tabVol;
 
   const origin = typeof frameOrigin === "string" ? frameOrigin : "";
   if (origin) {
@@ -174,9 +171,8 @@ function resolveEffectiveVolume(result, tabId, frameOrigin) {
     if (lv !== null) return lv;
   }
 
-  const { list: tabs } = normalizeTabEntries(result[STORAGE_KEY_TABS]);
   const urls = Array.isArray(result[STORAGE_KEY_URLS]) ? result[STORAGE_KEY_URLS] : [];
-  return resolveVolumeFromLists(tabs, urls, tabId, frameOrigin);
+  return resolveVolumeFromLists([], urls, tabId, frameOrigin);
 }
 
 function resolveVolumeFromStorage(tabId, frameOrigin, callback) {

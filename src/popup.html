@@ -61,17 +61,10 @@
             />
             <span class="slider-max" aria-hidden="true">400%</span>
           </div>
-          <p class="save-vol-label">Save volume level</p>
-          <div class="checkbox-inline-row">
-            <label class="checkbox-row checkbox-row--inline">
-              <input type="checkbox" id="save-to-tab" class="md-checkbox" />
-              <span class="checkbox-label">for Tab</span>
-            </label>
-            <label class="checkbox-row checkbox-row--inline">
-              <input type="checkbox" id="save-to-url" class="md-checkbox" />
-              <span class="checkbox-label">for URL</span>
-            </label>
-          </div>
+          <label class="checkbox-row pin-domain-row" for="pin-domain-toggle">
+            <span class="checkbox-label" id="pin-domain-label">Pin Settings: this domain</span>
+            <input type="checkbox" id="pin-domain-toggle" class="md-checkbox" />
+          </label>
         </section>
 
         <section class="section" aria-labelledby="quick-label">
@@ -183,28 +176,44 @@
           </div>
         </section>
 
-        <section class="settings-block" aria-labelledby="saved-label">
-          <h3 id="saved-label" class="settings-heading">Saved volume states</h3>
-          <div class="subtab-row" role="tablist" aria-label="Saved by">
-            <button type="button" class="subtab is-active" role="tab" id="tab-saved-tabs" aria-selected="true" data-saved-panel="tabs">
-              Tabs
-            </button>
-            <button type="button" class="subtab" role="tab" id="tab-saved-urls" aria-selected="false" data-saved-panel="urls">
-              URLs
+        <section class="settings-block" aria-labelledby="pinned-label">
+          <div class="settings-heading-row">
+            <h3 id="pinned-label" class="settings-heading">Pins</h3>
+            <button
+              type="button"
+              id="pinned-filter-toggle"
+              class="filter-icon-btn"
+              aria-label="Toggle pin filter"
+              aria-expanded="false"
+              title="Filter pins"
+            >
+              <svg class="icon-svg fa-filter-icon" viewBox="0 0 512 512" aria-hidden="true" focusable="false">
+                <path d="M3.9 54.9C10.5 40.9 24.5 32 40 32h432c15.5 0 29.5 8.9 36.1 22.9s4.6 30.5-5.2 42.5L320 320.9V448c0 12.1-6.8 23.2-17.7 28.6s-23.8 4.3-33.5-3l-64-48A32 32 0 0 1 192 400V320.9L9 97.3C-.7 85.4-2.8 68.8 3.9 54.9z" />
+              </svg>
             </button>
           </div>
-          <div id="panel-saved-tabs" class="saved-panel" role="tabpanel" aria-labelledby="tab-saved-tabs">
-            <ul class="saved-list" id="saved-list-tabs"></ul>
-            <p class="saved-empty" id="saved-empty-tabs" hidden>No saved tab volumes.</p>
-          </div>
-          <div id="panel-saved-urls" class="saved-panel" hidden role="tabpanel" aria-labelledby="tab-saved-urls">
-            <ul class="saved-list" id="saved-list-urls"></ul>
-            <p class="saved-empty" id="saved-empty-urls" hidden>No saved URL volumes.</p>
+          <input
+            type="search"
+            id="pinned-filter"
+            class="filter-input"
+            placeholder="Search list..."
+            aria-label="Filter pinned levels"
+            hidden
+          />
+          <div id="panel-pinned-levels" class="saved-panel" role="region" aria-labelledby="pinned-label">
+            <ul class="saved-list" id="pinned-list"></ul>
+            <p class="saved-empty" id="pinned-empty" hidden>No pinned domain levels.</p>
+            <div class="pagination-row" id="pinned-pagination" hidden>
+              <button type="button" class="pagination-btn" id="pinned-prev">Prev</button>
+              <span class="pagination-status" id="pinned-page-status">Page 1 of 1</span>
+              <button type="button" class="pagination-btn" id="pinned-next">Next</button>
+            </div>
           </div>
         </section>
       </div>
     </div>
     <script src="audio-policy.js"></script>
+    <script src="pin-policy.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

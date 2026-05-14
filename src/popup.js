@@ -1,12 +1,10 @@
 (() => {
   const AUDIO_POLICY = window.SSCAudioPolicy;
+  const PIN_POLICY = window.SSCPinPolicy;
   const STORAGE_KEYS = {
     theme: "ssc_theme",
     accent: "ssc_accent",
-    saveToTab: "ssc_save_to_tab",
-    saveToUrl: "ssc_save_to_url",
     lastQuickPreset: "ssc_last_quick_preset",
-    savedTabVolumes: "ssc_saved_tab_volumes",
     savedUrlVolumes: "ssc_saved_url_volumes",
     liveTabVolume: "ssc_live_tab_volume",
     tabCaptureEnabled: "ssc_tab_capture_enabled",
@@ -60,20 +58,21 @@
   const screenSettings = document.getElementById("screen-settings");
   const slider = document.getElementById("volume-slider");
   const valueOut = document.getElementById("volume-value");
-  const saveToTab = document.getElementById("save-to-tab");
-  const saveToUrl = document.getElementById("save-to-url");
+  const pinDomainToggle = document.getElementById("pin-domain-toggle");
+  const pinDomainLabel = document.getElementById("pin-domain-label");
   const settingsOpen = document.getElementById("settings-open");
   const settingsClose = document.getElementById("settings-close");
   const accentSwatches = document.querySelectorAll(".accent-swatch");
   const themeButtons = document.querySelectorAll(".theme-option");
   const chipButtons = document.querySelectorAll(".chip[data-preset]");
-  const savedSubtabs = document.querySelectorAll(".subtab[data-saved-panel]");
-  const panelTabs = document.getElementById("panel-saved-tabs");
-  const panelUrls = document.getElementById("panel-saved-urls");
-  const listTabs = document.getElementById("saved-list-tabs");
-  const listUrls = document.getElementById("saved-list-urls");
-  const emptyTabs = document.getElementById("saved-empty-tabs");
-  const emptyUrls = document.getElementById("saved-empty-urls");
+  const pinnedFilter = document.getElementById("pinned-filter");
+  const pinnedFilterToggle = document.getElementById("pinned-filter-toggle");
+  const pinnedList = document.getElementById("pinned-list");
+  const pinnedEmpty = document.getElementById("pinned-empty");
+  const pinnedPagination = document.getElementById("pinned-pagination");
+  const pinnedPrev = document.getElementById("pinned-prev");
+  const pinnedNext = document.getElementById("pinned-next");
+  const pinnedPageStatus = document.getElementById("pinned-page-status");
   const tabCaptureToggle = document.getElementById("tab-capture-toggle");
   const tabCaptureSection = document.getElementById("tab-capture-section");
 
@@ -82,6 +81,8 @@
   let activeTabCaptured = false;
   /** Resolved at init: { id, url, isHttpx } for the active tab, or null on chrome:// pages. */
   let activeTabInfo = null;
+  let activeDomainOrigin = "";
+  let pinnedPage = 1;
   /** Mirror of `ssc_tab_capture_enabled` for cheap synchronous reads in event handlers. */
   let tabCaptureEnabled = false;
 
@@ -203,75 +204,65 @@
     }
   }
 
-  /**
-   * @param {number} volume
-   */
-  async function upsertTabRow(tabId, tabUrl, title, volume) {
-    const key = STORAGE_KEYS.savedTabVolumes;
-    const data = await storageGet([key]);
-    const list = Array.isArray(data[key]) ? [...data[key]] : [];
-    const id = String(tabId);
-    const v = Math.max(0, Math.min(400, Math.round(Number(volume))));
-    const idx = list.findIndex(
-      (r) => Number(r.tabId) === Number(tabId) || String(r.id) === id
+  async function getPinnedRows() {
+    const data = await storageGet([STORAGE_KEYS.savedUrlVolumes]);
+    return PIN_POLICY.normalizePinnedRows(data[STORAGE_KEYS.savedUrlVolumes]);
+  }
+
+  async function setPinnedRows(rows) {
+    await storageSet({ [STORAGE_KEYS.savedUrlVolumes]: PIN_POLICY.normalizePinnedRows(rows) });
+  }
+
+  function updateActiveDomainPinLabel() {
+    if (!pinDomainLabel) return;
+    const domain = PIN_POLICY.domainLabelFromOrigin(activeDomainOrigin);
+    pinDomainLabel.textContent = domain
+      ? `Pin Settings: ${domain}`
+      : "Pin Settings: this domain";
+    if (pinDomainToggle) {
+      pinDomainToggle.disabled = !domain;
+    }
+  }
+
+  async function syncActiveDomainPinState(rowsOrNull) {
+    if (!pinDomainToggle) return;
+    const rows = rowsOrNull || (await getPinnedRows());
+    pinDomainToggle.checked = Boolean(
+      activeDomainOrigin && rows.some((row) => row.origin === activeDomainOrigin)
     );
-    const row = {
-      id,
-      tabId: Number(tabId),
-      title: title || `Tab ${tabId}`,
-      tabUrl: tabUrl || "",
-      volume: v,
-    };
-    if (idx >= 0) list[idx] = { ...list[idx], ...row };
-    else list.push(row);
-    await storageSet({ [key]: list });
   }
 
-  /**
-   * @param {string} origin
-   * @param {string} tabUrl
-   * @param {string} title
-   * @param {number} volume
-   */
-  async function upsertOriginRow(origin, tabUrl, title, volume) {
-    if (!origin) return;
-    const key = STORAGE_KEYS.savedUrlVolumes;
-    const data = await storageGet([key]);
-    const list = Array.isArray(data[key]) ? [...data[key]] : [];
-    const id = `origin:${origin}`;
-    const v = Math.max(0, Math.min(400, Math.round(Number(volume))));
-    const idx = list.findIndex((r) => r.origin === origin || String(r.id) === id);
-    const row = {
-      id,
-      origin,
-      url: tabUrl || "",
-      title: title || origin,
-      volume: v,
-    };
-    if (idx >= 0) list[idx] = { ...list[idx], ...row };
-    else list.push(row);
-    await storageSet({ [key]: list });
+  async function persistPinnedLevelForActiveDomain(volume) {
+    if (!pinDomainToggle?.checked || !activeDomainOrigin || !activeTabInfo?.isHttpx) return;
+    const rows = await getPinnedRows();
+    const next = PIN_POLICY.upsertPinnedLevel(rows, {
+      origin: activeDomainOrigin,
+      tabUrl: activeTabInfo.url || activeDomainOrigin,
+      title: activeDomainOrigin,
+      volume,
+    });
+    await setPinnedRows(next);
   }
 
-  async function persistScopedOverrides(volume) {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    const t = tabs[0];
-    if (!t?.id) return;
-    const topUrl = t.url || "";
-    if (!/^https?:/i.test(topUrl)) return;
-
-    let origin = "";
+  async function setActiveDomainPinned(enabled) {
+    if (!activeDomainOrigin) return;
+    const rows = await getPinnedRows();
+    const next = enabled
+      ? PIN_POLICY.upsertPinnedLevel(rows, {
+          origin: activeDomainOrigin,
+          tabUrl: activeTabInfo?.url || activeDomainOrigin,
+          title: activeDomainOrigin,
+          volume: Number(slider.value),
+        })
+      : PIN_POLICY.removePinnedLevel(rows, activeDomainOrigin);
+    await setPinnedRows(next);
+    pinnedPage = 1;
+    await loadPinnedList(next);
+    await syncActiveDomainPinState(next);
     try {
-      origin = new URL(topUrl).origin;
+      await chrome.runtime.sendMessage({ type: MSG_REFRESH_TOOLBAR });
     } catch {
-      origin = "";
-    }
-
-    if (saveToTab.checked) {
-      await upsertTabRow(t.id, topUrl, t.title || "", volume);
-    }
-    if (saveToUrl.checked && origin) {
-      await upsertOriginRow(origin, topUrl, t.title || "", volume);
+      /* ignore */
     }
   }
 
@@ -421,8 +412,8 @@
 
   async function applyVolumeToActiveTab(percent) {
     const capture = await reconcileCaptureForActiveTab(percent);
-    await persistScopedOverrides(percent);
     await recordLiveVolumeForActiveTab(percent);
+    await persistPinnedLevelForActiveDomain(percent);
     if (
       AUDIO_POLICY.shouldPushContentVolume({
         percent,
@@ -448,9 +439,13 @@
     settingsClose.focus();
   }
 
-  function renderSavedList(ul, items, type) {
-    ul.replaceChildren();
-    items.forEach((item) => {
+  function renderPinnedList(rowsOrNull) {
+    const rows = PIN_POLICY.normalizePinnedRows(rowsOrNull || []);
+    const query = pinnedFilter?.value || "";
+    const page = PIN_POLICY.paginatePinnedRows(rows, query, pinnedPage);
+    pinnedPage = page.currentPage;
+    pinnedList.replaceChildren();
+    page.items.forEach((item) => {
       const li = document.createElement("li");
       li.className = "saved-row";
       li.dataset.id = item.id;
@@ -460,23 +455,18 @@
 
       const title = document.createElement("div");
       title.className = "saved-row-title";
-      title.textContent =
-        item.title || (type === "tabs" ? "Saved tab" : item.origin || item.url || "Saved URL");
+      title.textContent = PIN_POLICY.domainLabelFromOrigin(item.origin);
 
       const meta = document.createElement("div");
       meta.className = "saved-row-meta";
-      meta.textContent =
-        type === "urls" && item.url && item.title
-          ? `${item.volume}% · ${item.url}`
-          : `${item.volume}%`;
+      meta.textContent = `${item.volume}% · ${item.origin}`;
 
       main.append(title, meta);
 
       const del = document.createElement("button");
       del.type = "button";
       del.className = "saved-delete";
-      del.title = "Remove";
-      del.dataset.deleteType = type;
+      del.title = `Remove ${PIN_POLICY.domainLabelFromOrigin(item.origin)}`;
       del.dataset.deleteId = item.id;
       del.innerHTML =
         '<svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
@@ -484,34 +474,28 @@
         '</svg><span class="visually-hidden">Delete</span>';
 
       li.append(main, del);
-      ul.append(li);
+      pinnedList.append(li);
     });
+
+    pinnedEmpty.hidden = page.totalItems > 0;
+    pinnedPagination.hidden = page.totalPages <= 1;
+    pinnedPrev.disabled = page.currentPage <= 1;
+    pinnedNext.disabled = page.currentPage >= page.totalPages;
+    pinnedPageStatus.textContent = `Page ${page.currentPage} of ${page.totalPages}`;
   }
 
-  async function loadSavedLists() {
-    const data = await storageGet([STORAGE_KEYS.savedTabVolumes, STORAGE_KEYS.savedUrlVolumes]);
-    const tabs = Array.isArray(data[STORAGE_KEYS.savedTabVolumes])
-      ? data[STORAGE_KEYS.savedTabVolumes]
-      : [];
-    const urls = Array.isArray(data[STORAGE_KEYS.savedUrlVolumes])
-      ? data[STORAGE_KEYS.savedUrlVolumes]
-      : [];
-
-    renderSavedList(listTabs, tabs, "tabs");
-    renderSavedList(listUrls, urls, "urls");
-
-    emptyTabs.hidden = tabs.length > 0;
-    emptyUrls.hidden = urls.length > 0;
+  async function loadPinnedList(rowsOrNull) {
+    const rows = rowsOrNull || (await getPinnedRows());
+    renderPinnedList(rows);
   }
 
-  async function deleteSaved(type, id) {
-    const key =
-      type === "tabs" ? STORAGE_KEYS.savedTabVolumes : STORAGE_KEYS.savedUrlVolumes;
-    const data = await storageGet([key]);
-    const list = Array.isArray(data[key]) ? data[key] : [];
-    const next = list.filter((row) => row.id !== id);
-    await storageSet({ [key]: next });
-    await loadSavedLists();
+  async function deletePinned(id) {
+    const rows = await getPinnedRows();
+    const next = PIN_POLICY.removePinnedLevel(rows, id);
+    await setPinnedRows(next);
+    pinnedPage = 1;
+    await loadPinnedList(next);
+    await syncActiveDomainPinState(next);
     await refreshSliderFromResolvedVolume();
   }
 
@@ -541,7 +525,7 @@
 
   settingsOpen.addEventListener("click", () => {
     showSettingsScreen();
-    loadSavedLists();
+    loadPinnedList();
   });
 
   settingsClose.addEventListener("click", () => {
@@ -566,12 +550,8 @@
     });
   });
 
-  saveToTab.addEventListener("change", () => {
-    storageSet({ [STORAGE_KEYS.saveToTab]: saveToTab.checked });
-  });
-
-  saveToUrl.addEventListener("change", () => {
-    storageSet({ [STORAGE_KEYS.saveToUrl]: saveToUrl.checked });
+  pinDomainToggle.addEventListener("change", async () => {
+    await setActiveDomainPinned(pinDomainToggle.checked);
   });
 
   function hideTabCaptureSection() {
@@ -617,40 +597,44 @@
     });
   }
 
-  savedSubtabs.forEach((tab) => {
-    tab.addEventListener("click", () => {
-      const panel = tab.getAttribute("data-saved-panel");
-      savedSubtabs.forEach((t) => {
-        const active = t === tab;
-        t.classList.toggle("is-active", active);
-        t.setAttribute("aria-selected", active ? "true" : "false");
-      });
-      const showTabs = panel === "tabs";
-      panelTabs.hidden = !showTabs;
-      panelUrls.hidden = showTabs;
-    });
+  pinnedFilter.addEventListener("input", async () => {
+    pinnedPage = 1;
+    await loadPinnedList();
+  });
+
+  pinnedFilterToggle.addEventListener("click", () => {
+    pinnedFilter.hidden = !pinnedFilter.hidden;
+    pinnedFilterToggle.setAttribute("aria-expanded", pinnedFilter.hidden ? "false" : "true");
+    if (!pinnedFilter.hidden) {
+      pinnedFilter.focus();
+    }
+  });
+
+  pinnedPrev.addEventListener("click", async () => {
+    pinnedPage -= 1;
+    await loadPinnedList();
+  });
+
+  pinnedNext.addEventListener("click", async () => {
+    pinnedPage += 1;
+    await loadPinnedList();
   });
 
   document.body.addEventListener("click", (e) => {
     const del = e.target.closest(".saved-delete");
     if (!del) return;
-    const type = del.dataset.deleteType;
     const id = del.dataset.deleteId;
-    if (type && id) {
-      deleteSaved(type, id);
+    if (id) {
+      deletePinned(id);
     }
   });
 
   if (chrome.storage?.onChanged) {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== "local") return;
-      if (
-        changes[STORAGE_KEYS.savedTabVolumes] ||
-        changes[STORAGE_KEYS.savedUrlVolumes] ||
-        changes[STORAGE_KEYS.liveTabVolume]
-      ) {
-        loadSavedLists();
-        refreshSliderFromResolvedVolume();
+      if (changes[STORAGE_KEYS.savedUrlVolumes]) {
+        loadPinnedList();
+        syncActiveDomainPinState();
       }
     });
   }
@@ -659,10 +643,7 @@
     const data = await storageGet([
       STORAGE_KEYS.theme,
       STORAGE_KEYS.accent,
-      STORAGE_KEYS.saveToTab,
-      STORAGE_KEYS.saveToUrl,
       STORAGE_KEYS.lastQuickPreset,
-      STORAGE_KEYS.savedTabVolumes,
       STORAGE_KEYS.savedUrlVolumes,
       STORAGE_KEYS.tabCaptureEnabled,
     ]);
@@ -672,9 +653,6 @@
 
     const accent = ACCENTS.has(data[STORAGE_KEYS.accent]) ? data[STORAGE_KEYS.accent] : "purple";
     applyAccent(accent);
-
-    saveToTab.checked = Boolean(data[STORAGE_KEYS.saveToTab]);
-    saveToUrl.checked = Boolean(data[STORAGE_KEYS.saveToUrl]);
 
     if (HAS_TAB_CAPTURE && tabCaptureToggle) {
       // Default to tab-level gain on Chrome. If permission has not been granted
@@ -696,8 +674,12 @@
         url: t0.url || "",
         isHttpx: AUDIO_POLICY.isHttpxUrl(t0.url || ""),
       };
+      activeDomainOrigin = PIN_POLICY.originFromUrl(t0.url || "");
       activeTabCaptured = await queryActiveTabCaptured(t0.id);
     }
+    updateActiveDomainPinLabel();
+    const pinnedRows = PIN_POLICY.normalizePinnedRows(data[STORAGE_KEYS.savedUrlVolumes]);
+    await syncActiveDomainPinState(pinnedRows);
     slider.value = String(effective);
     updateFromSlider();
     // Popup open is itself a user-gesture context, so this is a legal place to
@@ -726,9 +708,6 @@
       applyQuickPresetHighlight(null);
     }
 
-    if (!Array.isArray(data[STORAGE_KEYS.savedTabVolumes])) {
-      await storageSet({ [STORAGE_KEYS.savedTabVolumes]: [] });
-    }
     if (!Array.isArray(data[STORAGE_KEYS.savedUrlVolumes])) {
       await storageSet({ [STORAGE_KEYS.savedUrlVolumes]: [] });
     }
@@ -736,6 +715,6 @@
     if (liveRaw === undefined || liveRaw === null || typeof liveRaw !== "object" || Array.isArray(liveRaw)) {
       await storageSet({ [STORAGE_KEYS.liveTabVolume]: {} });
     }
-    await loadSavedLists();
+    await loadPinnedList(pinnedRows);
   })();
 })();

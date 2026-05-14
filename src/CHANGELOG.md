@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-05-13
+
+### Changed
+
+- **Pin UI copy and filtering refined.** The main popup now labels the domain pin control as "Pin Settings", and Settings now shows a "Pins" header with a funnel filter button that reveals the hidden search box.
+- **Pinned list search placeholder changed.** The filter input now uses "Search list..." when shown.
+
+## [0.2.5] - 2026-05-13
+
+### Changed
+
+- **Saved volume levels are now domain pins only.** The popup replaces separate "for Tab" / "for URL" saves with a single "Pin Volume Level: {domain}" checkbox that stores the current origin and applies it across that domain's paths/query URLs until changed or unpinned.
+- **Persistent tab-specific saved volumes are no longer used for resolution.** Live per-tab volume still applies during the current browser session, but durable pins resolve by origin so a pinned site like YouTube keeps the same level across pages on that origin.
+- **Settings now lists pinned domains automatically.** Added a "Pinned Levels" section with a "Filter Pins" search box, delete actions, and six pinned domains per page.
+
 ## [0.2.4] - 2026-05-13
 
 ### Changed
