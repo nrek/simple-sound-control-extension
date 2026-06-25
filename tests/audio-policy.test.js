@@ -15,6 +15,20 @@ test("prefers tab capture by default on Chrome http tabs below 100%", () => {
   );
 });
 
+test("prefers tab capture for Zoom WebRTC calls at non-neutral levels", () => {
+  for (const percent of [50, 200]) {
+    assert.equal(
+      policy.shouldUseTabCapture({
+        hasTabCapture: true,
+        tabCaptureEnabled: undefined,
+        activeTabInfo: { id: 456, url: "https://app.zoom.us/wc/join/123456789", isHttpx: true },
+        percent,
+      }),
+      true
+    );
+  }
+});
+
 test("does not use tab capture at neutral 100%", () => {
   assert.equal(
     policy.shouldUseTabCapture({

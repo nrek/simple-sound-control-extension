@@ -2,6 +2,7 @@
   const MSG_SET = "SSC_SET_VOLUME";
   const MSG_RESOLVE = "SSC_RESOLVE_VOLUME";
   const MSG_PASSTHROUGH = "SSC_PASSTHROUGH_MODE";
+  const MSG_DEBUG_AUDIO = "SSC_DEBUG_AUDIO_STATE";
   const DEFAULT_PERCENT = 100;
 
   const proto = location.protocol;
@@ -97,6 +98,40 @@
   function applyGain() {
     if (!masterGain) return;
     masterGain.gain.value = Math.max(0, Math.min(4, Number(pendingPercent) / 100));
+  }
+
+  function getDebugAudioState() {
+    const state = {
+      ok: true,
+      pendingPercent,
+      audioUnlocked,
+      passthroughMode,
+      hasAudioContext: Boolean(ctx),
+      audioContextState: ctx?.state || null,
+      hasMasterGain: Boolean(masterGain),
+      masterGainValue: masterGain ? masterGain.gain.value : null,
+      tracked: 0,
+      routed: 0,
+      volumeFallback: 0,
+      srcObjectFallback: 0,
+      disconnected: 0,
+    };
+
+    for (const ref of tracked) {
+      const el = ref.deref();
+      if (!el || !el.isConnected) {
+        state.disconnected += 1;
+        continue;
+      }
+      state.tracked += 1;
+      if (routed.has(el)) state.routed += 1;
+      if (volumeFallback.has(el)) {
+        state.volumeFallback += 1;
+        if (el.srcObject) state.srcObjectFallback += 1;
+      }
+    }
+
+    return state;
   }
 
   function track(el) {
@@ -397,6 +432,10 @@
         pullResolvedVolume();
       }
       sendResponse({ ok: true, passthroughMode });
+      return true;
+    }
+    if (msg?.type === MSG_DEBUG_AUDIO) {
+      sendResponse(getDebugAudioState());
       return true;
     }
     return false;

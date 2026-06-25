@@ -53,6 +53,7 @@
   const MSG_TAB_CAPTURE_RELEASE = "SSC_TAB_CAPTURE_RELEASE";
   const MSG_TAB_CAPTURE_RELEASE_ALL = "SSC_TAB_CAPTURE_RELEASE_ALL";
   const MSG_TAB_CAPTURE_QUERY = "SSC_TAB_CAPTURE_QUERY";
+  const MSG_TAB_CAPTURE_NOTE = "SSC_TAB_CAPTURE_NOTE";
 
   const screenMain = document.getElementById("screen-main");
   const screenSettings = document.getElementById("screen-settings");
@@ -282,6 +283,17 @@
     return Boolean(r?.captured);
   }
 
+  async function noteCaptureDiagnostic(tabId, status, details = {}) {
+    if (tabId == null) return;
+    await bgSend({
+      type: MSG_TAB_CAPTURE_NOTE,
+      tabId,
+      status,
+      percent: details.percent,
+      error: details.error,
+    });
+  }
+
   async function ensureTabCapturePermission() {
     if (!HAS_TAB_CAPTURE) return false;
     try {
@@ -310,24 +322,43 @@
    * @returns {Promise<boolean>} true on success
    */
   async function engageOrUpdateCapture(tabId, percent) {
-    if (!HAS_TAB_CAPTURE || tabId == null) return false;
+    if (!HAS_TAB_CAPTURE || tabId == null) {
+      await noteCaptureDiagnostic(tabId, "tab capture api unavailable", { percent });
+      return false;
+    }
     if (activeTabCaptured) {
       const r = await bgSend({ type: MSG_TAB_CAPTURE_GAIN, tabId, percent });
+      if (!r?.ok) {
+        await noteCaptureDiagnostic(tabId, "gain update message failed", {
+          percent,
+          error: r?.error,
+        });
+      }
       return Boolean(r?.ok);
     }
     const permitted = await ensureTabCapturePermission();
-    if (!permitted) return false;
+    if (!permitted) {
+      await noteCaptureDiagnostic(tabId, "permission denied", { percent });
+      return false;
+    }
     let streamId;
     // SSC_FIREFOX_STRIP_BEGIN
     try {
       streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
-    } catch {
+    } catch (err) {
+      await noteCaptureDiagnostic(tabId, "stream id failed", {
+        percent,
+        error: err?.message || err,
+      });
       return false;
     }
     // SSC_FIREFOX_STRIP_ELSE
     streamId = "";
     // SSC_FIREFOX_STRIP_END
-    if (!streamId) return false;
+    if (!streamId) {
+      await noteCaptureDiagnostic(tabId, "stream id empty", { percent });
+      return false;
+    }
     const r = await bgSend({
       type: MSG_TAB_CAPTURE_ENGAGE,
       tabId,
@@ -337,6 +368,9 @@
     if (r?.ok) {
       activeTabCaptured = true;
       return true;
+    }
+    if (!r) {
+      await noteCaptureDiagnostic(tabId, "background engage failed", { percent });
     }
     return false;
   }
