@@ -2,8 +2,6 @@ const STORAGE_KEY_TABS = "ssc_saved_tab_volumes";
 const STORAGE_KEY_URLS = "ssc_saved_url_volumes";
 const STORAGE_KEY_ACCENT = "ssc_accent";
 const STORAGE_KEY_LIVE = "ssc_live_tab_volume";
-const STORAGE_KEY_TAB_CAPTURE = "ssc_tab_capture_enabled";
-
 const MSG_RESOLVE_FRAME = "SSC_RESOLVE_VOLUME";
 const MSG_RESOLVE_TAB = "SSC_RESOLVE_VOLUME_FOR_TAB";
 const MSG_REFRESH_TOOLBAR = "SSC_REFRESH_TOOLBAR";
@@ -12,12 +10,9 @@ const MSG_TAB_CAPTURE_GAIN = "SSC_TAB_CAPTURE_GAIN";
 const MSG_TAB_CAPTURE_RELEASE = "SSC_TAB_CAPTURE_RELEASE";
 const MSG_TAB_CAPTURE_RELEASE_ALL = "SSC_TAB_CAPTURE_RELEASE_ALL";
 const MSG_TAB_CAPTURE_QUERY = "SSC_TAB_CAPTURE_QUERY";
-const MSG_TAB_CAPTURE_NOTE = "SSC_TAB_CAPTURE_NOTE";
-const MSG_TAB_CAPTURE_DEBUG = "SSC_TAB_CAPTURE_DEBUG";
 const MSG_OFFSCREEN_START = "SSC_OFFSCREEN_START";
 const MSG_OFFSCREEN_GAIN = "SSC_OFFSCREEN_GAIN";
 const MSG_OFFSCREEN_STOP = "SSC_OFFSCREEN_STOP";
-const MSG_OFFSCREEN_DEBUG = "SSC_OFFSCREEN_DEBUG";
 const MSG_PASSTHROUGH_MODE = "SSC_PASSTHROUGH_MODE";
 
 const OFFSCREEN_PATH = "offscreen.html";
@@ -32,13 +27,6 @@ const OFFSCREEN_JUSTIFICATION =
  * @type {Map<number, { wasMuted: boolean, percent: number }>}
  */
 const capturedTabs = new Map();
-
-/**
- * Last known capture boundary per tab. This records coarse states only
- * (permission/stream/offscreen/gain/release); never stream ids or page media.
- * @type {Map<number, { status: string, at: number, captured: boolean, percent?: number, error?: string }>}
- */
-const captureDiagnostics = new Map();
 
 /**
  * Last known origin per tab. Lets `tabs.onUpdated` distinguish a real
@@ -130,25 +118,6 @@ function clampVolume(v) {
 function accentHexFromKey(key) {
   const k = typeof key === "string" ? key.toLowerCase() : "purple";
   return ACCENT_HEX[k] || ACCENT_HEX.purple;
-}
-
-function sanitizeDiagnosticError(error) {
-  if (error == null) return undefined;
-  return String(error).slice(0, 240);
-}
-
-function recordCaptureDiagnostic(tabId, status, details = {}) {
-  const tid = Number(tabId);
-  if (Number.isNaN(tid)) return;
-  const record = {
-    status: String(status || "unknown"),
-    at: Date.now(),
-    captured: capturedTabs.has(tid),
-  };
-  if (details.percent !== undefined) record.percent = Number(details.percent);
-  const error = sanitizeDiagnosticError(details.error);
-  if (error) record.error = error;
-  captureDiagnostics.set(tid, record);
 }
 
 /**
@@ -369,7 +338,6 @@ function pruneClosedTab(tabId) {
 chrome.tabs.onRemoved.addListener((tabId) => {
   pruneClosedTab(tabId);
   lastOriginByTab.delete(Number(tabId));
-  captureDiagnostics.delete(Number(tabId));
   // The tab is gone, so no source-tab unmute needed; just clear our state and
   // the offscreen chain.
   if (capturedTabs.has(Number(tabId))) {
@@ -507,17 +475,6 @@ async function sendOffscreenStop(tabId) {
   }
 }
 
-async function sendOffscreenDebug(tabId) {
-  try {
-    return await chrome.runtime.sendMessage({
-      type: MSG_OFFSCREEN_DEBUG,
-      tabId: Number(tabId),
-    });
-  } catch {
-    return { ok: false, error: "offscreen unavailable" };
-  }
-}
-
 async function notifyContentScript(tabId, enabled) {
   try {
     await chrome.tabs.sendMessage(Number(tabId), {
@@ -572,32 +529,22 @@ async function engageCapture(tabId, streamId, percent) {
   if (existing) {
     existing.percent = Number(percent);
     capturedTabs.set(tid, existing);
-    const gainResp = await sendOffscreenGain(tid, percent);
-    recordCaptureDiagnostic(tid, gainResp?.ok ? "gain updated" : "gain update failed", {
-      percent,
-      error: gainResp?.error,
-    });
+    await sendOffscreenGain(tid, percent);
     return { ok: true, alreadyCaptured: true };
   }
 
   const ready = await ensureOffscreen();
   if (!ready) {
-    recordCaptureDiagnostic(tid, "offscreen unavailable", { percent });
     return { ok: false, error: "offscreen unavailable" };
   }
 
   const startResp = await sendOffscreenStart(tid, streamId, percent);
   if (!startResp?.ok) {
-    recordCaptureDiagnostic(tid, "offscreen start failed", {
-      percent,
-      error: startResp?.error,
-    });
     return { ok: false, error: startResp?.error || "offscreen start failed" };
   }
 
   const wasMuted = await muteSourceTab(tid);
   capturedTabs.set(tid, { wasMuted, percent: Number(percent) });
-  recordCaptureDiagnostic(tid, "captured", { percent });
   void notifyContentScript(tid, true);
   return { ok: true };
 }
@@ -606,16 +553,11 @@ async function setCaptureGain(tabId, percent) {
   const tid = Number(tabId);
   const rec = capturedTabs.get(tid);
   if (!rec) {
-    recordCaptureDiagnostic(tid, "gain update without capture", { percent });
     return { ok: false, error: "not captured" };
   }
   rec.percent = Number(percent);
   capturedTabs.set(tid, rec);
-  const gainResp = await sendOffscreenGain(tid, percent);
-  recordCaptureDiagnostic(tid, gainResp?.ok ? "gain updated" : "gain update failed", {
-    percent,
-    error: gainResp?.error,
-  });
+  await sendOffscreenGain(tid, percent);
   return { ok: true };
 }
 
@@ -623,7 +565,6 @@ async function releaseCapture(tabId) {
   const tid = Number(tabId);
   const rec = capturedTabs.get(tid);
   if (!rec) {
-    recordCaptureDiagnostic(tid, "release without capture");
     return { ok: true, wasCaptured: false };
   }
   capturedTabs.delete(tid);
@@ -631,7 +572,6 @@ async function releaseCapture(tabId) {
   await restoreSourceTabMute(tid, rec.wasMuted);
   void notifyContentScript(tid, false);
   await maybeCloseOffscreen();
-  recordCaptureDiagnostic(tid, "released", { percent: rec.percent });
   return { ok: true, wasCaptured: true };
 }
 
@@ -642,16 +582,6 @@ async function releaseAllCaptures() {
   }
   return { ok: true, released: ids.length };
 }
-
-// If the user disables Tab Capture mode globally via storage, drop everything.
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== "local") return;
-  const change = changes[STORAGE_KEY_TAB_CAPTURE];
-  if (!change) return;
-  if (change.newValue === false || change.newValue === undefined) {
-    void releaseAllCaptures();
-  }
-});
 
 /**
  * Drops saved-tab + live-volume rows whose tabIds don't exist in the current
@@ -837,33 +767,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       ok: true,
       captured: Boolean(rec),
       percent: rec?.percent,
-      lastResult: captureDiagnostics.get(tid) || null,
     });
     return false;
-  }
-
-  if (msg?.type === MSG_TAB_CAPTURE_NOTE) {
-    recordCaptureDiagnostic(msg.tabId, msg.status, {
-      percent: msg.percent,
-      error: msg.error,
-    });
-    sendResponse({ ok: true });
-    return false;
-  }
-
-  if (msg?.type === MSG_TAB_CAPTURE_DEBUG) {
-    const tid = Number(msg.tabId);
-    const rec = capturedTabs.get(tid);
-    sendOffscreenDebug(tid).then((offscreen) => {
-      sendResponse({
-        ok: true,
-        captured: Boolean(rec),
-        percent: rec?.percent,
-        lastResult: captureDiagnostics.get(tid) || null,
-        offscreen,
-      });
-    });
-    return true;
   }
 
   return false;

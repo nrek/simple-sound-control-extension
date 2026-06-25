@@ -3,16 +3,11 @@
  * workers can't host an `AudioContext`. One AudioContext is shared across
  * captured tabs; each captured tab gets its own MediaStream → GainNode →
  * destination chain. Captures are keyed by `tabId`.
- *
- * Lifecycle is driven entirely by the background service worker via
- * `chrome.runtime.sendMessage`. We never originate state changes here.
  */
 (() => {
   const MSG_START = "SSC_OFFSCREEN_START";
   const MSG_GAIN = "SSC_OFFSCREEN_GAIN";
   const MSG_STOP = "SSC_OFFSCREEN_STOP";
-  const MSG_LIST = "SSC_OFFSCREEN_LIST";
-  const MSG_DEBUG = "SSC_OFFSCREEN_DEBUG";
 
   /** @type {AudioContext | null} */
   let ctx = null;
@@ -72,30 +67,6 @@
     return true;
   }
 
-  function getCaptureDebugState(tabId) {
-    const tid = Number(tabId);
-    const cap = captures.get(tid);
-    if (!cap) {
-      return {
-        ok: true,
-        captured: false,
-        contextState: ctx?.state || null,
-        activeCaptures: captures.size,
-      };
-    }
-    const tracks = cap.stream.getAudioTracks();
-    return {
-      ok: true,
-      captured: true,
-      contextState: ctx?.state || null,
-      activeCaptures: captures.size,
-      gain: cap.gain.gain.value,
-      audioTracks: tracks.length,
-      liveAudioTracks: tracks.filter((track) => track.readyState === "live").length,
-      mutedAudioTracks: tracks.filter((track) => track.muted).length,
-    };
-  }
-
   function stopCapture(tabId) {
     const tid = Number(tabId);
     const cap = captures.get(tid);
@@ -141,14 +112,6 @@
     if (msg?.type === MSG_STOP) {
       const ok = stopCapture(msg.tabId);
       sendResponse({ ok, remaining: captures.size });
-      return false;
-    }
-    if (msg?.type === MSG_LIST) {
-      sendResponse({ ok: true, tabs: Array.from(captures.keys()) });
-      return false;
-    }
-    if (msg?.type === MSG_DEBUG) {
-      sendResponse(getCaptureDebugState(msg.tabId));
       return false;
     }
     return false;

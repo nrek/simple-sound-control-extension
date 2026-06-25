@@ -5,12 +5,7 @@
   }
   root.SSCAudioPolicy = api;
 })(typeof globalThis !== "undefined" ? globalThis : window, () => {
-  const DEFAULT_TAB_CAPTURE_ENABLED = true;
   const DEFAULT_PERCENT = 100;
-
-  function resolveTabCapturePreference(value) {
-    return value === undefined ? DEFAULT_TAB_CAPTURE_ENABLED : Boolean(value);
-  }
 
   function normalizePercent(percent) {
     const value = Number(percent);
@@ -25,18 +20,18 @@
     return Boolean(activeTabInfo?.id) && Boolean(activeTabInfo?.isHttpx);
   }
 
-  function shouldUseTabCapture({
-    hasTabCapture,
-    tabCaptureEnabled,
-    activeTabInfo,
-    percent,
-  }) {
+  /**
+   * Chrome whole-tab capture is the product path for any non-neutral level.
+   * Capability + http(s) tab + percent !== 100 is sufficient; there is no
+   * user opt-out because only tab-level gain can deliver 0–400% reliably.
+   */
+  function shouldUseTabCapture({ hasTabCapture, activeTabInfo, percent }) {
     if (!hasTabCapture) return false;
-    if (!resolveTabCapturePreference(tabCaptureEnabled)) return false;
     if (!hasUsableTab(activeTabInfo)) return false;
     return normalizePercent(percent) !== DEFAULT_PERCENT;
   }
 
+  /** Content-script fallback runs only when capture was attempted but failed, or at 100%. */
   function shouldPushContentVolume({ percent, captureAttempted, captureSucceeded }) {
     if (normalizePercent(percent) === DEFAULT_PERCENT) return true;
     if (captureAttempted && captureSucceeded) return false;
@@ -44,9 +39,7 @@
   }
 
   return {
-    DEFAULT_TAB_CAPTURE_ENABLED,
     DEFAULT_PERCENT,
-    resolveTabCapturePreference,
     normalizePercent,
     isHttpxUrl,
     shouldUseTabCapture,

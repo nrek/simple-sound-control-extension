@@ -7,7 +7,6 @@
     lastQuickPreset: "ssc_last_quick_preset",
     savedUrlVolumes: "ssc_saved_url_volumes",
     liveTabVolume: "ssc_live_tab_volume",
-    tabCaptureEnabled: "ssc_tab_capture_enabled",
   };
 
   /**
@@ -53,7 +52,6 @@
   const MSG_TAB_CAPTURE_RELEASE = "SSC_TAB_CAPTURE_RELEASE";
   const MSG_TAB_CAPTURE_RELEASE_ALL = "SSC_TAB_CAPTURE_RELEASE_ALL";
   const MSG_TAB_CAPTURE_QUERY = "SSC_TAB_CAPTURE_QUERY";
-  const MSG_TAB_CAPTURE_NOTE = "SSC_TAB_CAPTURE_NOTE";
 
   const screenMain = document.getElementById("screen-main");
   const screenSettings = document.getElementById("screen-settings");
@@ -74,8 +72,6 @@
   const pinnedPrev = document.getElementById("pinned-prev");
   const pinnedNext = document.getElementById("pinned-next");
   const pinnedPageStatus = document.getElementById("pinned-page-status");
-  const tabCaptureToggle = document.getElementById("tab-capture-toggle");
-  const tabCaptureSection = document.getElementById("tab-capture-section");
 
   let suppressQuickPresetClear = false;
   /** Whether Tab Capture is currently engaged for the active tab in this popup session. */
@@ -84,8 +80,6 @@
   let activeTabInfo = null;
   let activeDomainOrigin = "";
   let pinnedPage = 1;
-  /** Mirror of `ssc_tab_capture_enabled` for cheap synchronous reads in event handlers. */
-  let tabCaptureEnabled = false;
 
   function storageGet(keys) {
     return new Promise((resolve) => {
@@ -283,28 +277,11 @@
     return Boolean(r?.captured);
   }
 
-  async function noteCaptureDiagnostic(tabId, status, details = {}) {
-    if (tabId == null) return;
-    await bgSend({
-      type: MSG_TAB_CAPTURE_NOTE,
-      tabId,
-      status,
-      percent: details.percent,
-      error: details.error,
-    });
-  }
-
   async function ensureTabCapturePermission() {
     if (!HAS_TAB_CAPTURE) return false;
     try {
       if (await chrome.permissions.contains(TAB_CAPTURE_PERMISSIONS)) return true;
-      const granted = await chrome.permissions.request(TAB_CAPTURE_PERMISSIONS);
-      if (!granted) {
-        tabCaptureEnabled = false;
-        if (tabCaptureToggle) tabCaptureToggle.checked = false;
-        await storageSet({ [STORAGE_KEYS.tabCaptureEnabled]: false });
-      }
-      return Boolean(granted);
+      return Boolean(await chrome.permissions.request(TAB_CAPTURE_PERMISSIONS));
     } catch {
       return false;
     }
@@ -322,43 +299,24 @@
    * @returns {Promise<boolean>} true on success
    */
   async function engageOrUpdateCapture(tabId, percent) {
-    if (!HAS_TAB_CAPTURE || tabId == null) {
-      await noteCaptureDiagnostic(tabId, "tab capture api unavailable", { percent });
-      return false;
-    }
+    if (!HAS_TAB_CAPTURE || tabId == null) return false;
     if (activeTabCaptured) {
       const r = await bgSend({ type: MSG_TAB_CAPTURE_GAIN, tabId, percent });
-      if (!r?.ok) {
-        await noteCaptureDiagnostic(tabId, "gain update message failed", {
-          percent,
-          error: r?.error,
-        });
-      }
       return Boolean(r?.ok);
     }
     const permitted = await ensureTabCapturePermission();
-    if (!permitted) {
-      await noteCaptureDiagnostic(tabId, "permission denied", { percent });
-      return false;
-    }
+    if (!permitted) return false;
     let streamId;
     // SSC_FIREFOX_STRIP_BEGIN
     try {
       streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
-    } catch (err) {
-      await noteCaptureDiagnostic(tabId, "stream id failed", {
-        percent,
-        error: err?.message || err,
-      });
+    } catch {
       return false;
     }
     // SSC_FIREFOX_STRIP_ELSE
     streamId = "";
     // SSC_FIREFOX_STRIP_END
-    if (!streamId) {
-      await noteCaptureDiagnostic(tabId, "stream id empty", { percent });
-      return false;
-    }
+    if (!streamId) return false;
     const r = await bgSend({
       type: MSG_TAB_CAPTURE_ENGAGE,
       tabId,
@@ -368,9 +326,6 @@
     if (r?.ok) {
       activeTabCaptured = true;
       return true;
-    }
-    if (!r) {
-      await noteCaptureDiagnostic(tabId, "background engage failed", { percent });
     }
     return false;
   }
@@ -383,25 +338,16 @@
   }
 
   /**
-   * Reconcile capture state to the desired `percent` for the active tab,
-   * given the current `tabCaptureEnabled` setting. Engages, gain-updates, or
-   * releases as appropriate.
-   * @param {number} percent
+   * Engage, gain-update, or release Tab Capture for the active tab.
+   * On Chrome, non-100% levels always attempt whole-tab capture first.
    */
   async function reconcileCaptureForActiveTab(percent) {
     const wantsCapture = AUDIO_POLICY.shouldUseTabCapture({
       hasTabCapture: HAS_TAB_CAPTURE,
-      tabCaptureEnabled,
       activeTabInfo,
       percent,
     });
     if (!HAS_TAB_CAPTURE || !activeTabInfo?.id || !activeTabInfo.isHttpx) {
-      return { attempted: false, captured: false };
-    }
-    if (!tabCaptureEnabled) {
-      if (activeTabCaptured) {
-        await releaseActiveTabCapture(activeTabInfo.id);
-      }
       return { attempted: false, captured: false };
     }
     const v = Number(percent);
@@ -588,49 +534,6 @@
     await setActiveDomainPinned(pinDomainToggle.checked);
   });
 
-  function hideTabCaptureSection() {
-    if (!tabCaptureSection) return;
-    tabCaptureSection.hidden = true;
-    if (tabCaptureToggle) {
-      tabCaptureToggle.checked = false;
-      tabCaptureToggle.disabled = true;
-    }
-  }
-
-  if (!HAS_TAB_CAPTURE) {
-    // No `chrome.tabCapture` (Firefox, or Chrome before MV3 offscreen support).
-    // Hide the whole settings block — there's nothing actionable for the user.
-    hideTabCaptureSection();
-  } else if (tabCaptureToggle) {
-    tabCaptureToggle.addEventListener("change", async () => {
-      const wantOn = Boolean(tabCaptureToggle.checked);
-      if (wantOn) {
-        let granted = false;
-        try {
-          granted = await chrome.permissions.request(TAB_CAPTURE_PERMISSIONS);
-        } catch {
-          granted = false;
-        }
-        if (!granted) {
-          tabCaptureToggle.checked = false;
-          tabCaptureEnabled = false;
-          await storageSet({ [STORAGE_KEYS.tabCaptureEnabled]: false });
-          return;
-        }
-        tabCaptureEnabled = true;
-        await storageSet({ [STORAGE_KEYS.tabCaptureEnabled]: true });
-        await reconcileCaptureForActiveTab(Number(slider.value));
-      } else {
-        tabCaptureEnabled = false;
-        await storageSet({ [STORAGE_KEYS.tabCaptureEnabled]: false });
-        // Background's storage listener releases all captures globally;
-        // mirror that locally so the popup state agrees immediately.
-        activeTabCaptured = false;
-        await bgSend({ type: MSG_TAB_CAPTURE_RELEASE_ALL });
-      }
-    });
-  }
-
   pinnedFilter.addEventListener("input", async () => {
     pinnedPage = 1;
     await loadPinnedList();
@@ -679,7 +582,6 @@
       STORAGE_KEYS.accent,
       STORAGE_KEYS.lastQuickPreset,
       STORAGE_KEYS.savedUrlVolumes,
-      STORAGE_KEYS.tabCaptureEnabled,
     ]);
 
     const theme = THEMES.has(data[STORAGE_KEYS.theme]) ? data[STORAGE_KEYS.theme] : "dark";
@@ -687,16 +589,6 @@
 
     const accent = ACCENTS.has(data[STORAGE_KEYS.accent]) ? data[STORAGE_KEYS.accent] : "purple";
     applyAccent(accent);
-
-    if (HAS_TAB_CAPTURE && tabCaptureToggle) {
-      // Default to tab-level gain on Chrome. If permission has not been granted
-      // yet, Chrome will ask from the next user-gesture volume change.
-      tabCaptureEnabled = AUDIO_POLICY.resolveTabCapturePreference(data[STORAGE_KEYS.tabCaptureEnabled]);
-      tabCaptureToggle.checked = tabCaptureEnabled;
-      if (data[STORAGE_KEYS.tabCaptureEnabled] === undefined) {
-        await storageSet({ [STORAGE_KEYS.tabCaptureEnabled]: tabCaptureEnabled });
-      }
-    }
 
     const tabsQ = await chrome.tabs.query({ active: true, currentWindow: true });
     const t0 = tabsQ[0];

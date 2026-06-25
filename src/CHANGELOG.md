@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Tab gain is capture-first on Chrome.** Any non-100% level on an http(s) tab routes through whole-tab capture and offscreen gain (0–400%). There is no Settings toggle to disable this path; Chrome prompts for `tabCapture` / `offscreen` permission on first use.
+- **Content-script media control is lazy fallback only.** Page scanning, shadow-DOM observers, and `attachShadow` patching start only when capture is unavailable or permission is denied. At 100% or while capture is active, fallback infrastructure tears down and releases `el.volume` holds.
+- **Removed internal Zoom/debug message paths** (`SSC_DEBUG_*`, capture diagnostic maps) added during investigation.
+
+### Removed
+
+- **Settings “Tab Capture mode” toggle.** Whole-tab capture is the product path on Chrome, not an optional mode.
+
 ## [0.2.6] - 2026-05-13
 
 ### Changed
