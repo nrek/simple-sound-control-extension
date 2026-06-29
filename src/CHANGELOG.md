@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-06-25
+
 ### Changed
 
 - **Tab gain is capture-first on Chrome.** Any non-100% level on an http(s) tab routes through whole-tab capture and offscreen gain (0–400%). There is no Settings toggle to disable this path; Chrome prompts for `tabCapture` / `offscreen` permission on first use.
