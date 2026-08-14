@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.14] - 2026-08-14
+
+### Changed
+
+- **Release cleanup.** Removed temporary Meet capture status line under Pin Settings and diagnostic `[SSC]` console logging. Keeps the Chrome optional-permission Tab Capture fix from 0.2.13.
+
+## [0.2.13] - 2026-08-14
+
+### Fixed
+
+- **Meet capture no longer skipped when Chrome hides `tabCapture` pre-permission.** Status `api=false` on Meet meant SSC never requested optional `tabCapture`/`offscreen` because feature detection required `chrome.tabCapture.getMediaStreamId` to already exist. Detection now accepts declared optional permissions, requests them, then engages capture. YouTube still worked via content-script fallback; Meet WebRTC cannot.
+
+## [0.2.12] - 2026-08-14
+
+### Changed
+
+- **Popup shows capture diagnostics without DevTools.** A live status line under Pin Settings reports extension version plus capture engage/gain/failure reasons. Chrome DevTools Application → WebMCP is unrelated to SSC and will stay empty.
+
+## [0.2.11] - 2026-08-14
+
+### Changed
+
+- **Capture-path diagnostics for Meet debugging.** Popup, service worker, and offscreen host now emit `[SSC]` console messages for permission, `getMediaStreamId`, offscreen prepare/start/gain, and engage failures. Blank consoles previously hid silent Tab Capture failures that leave Meet on the ineffective WebRTC fallback.
+
+## [0.2.10] - 2026-08-14
+
+### Fixed
+
+- **Google Meet now reaches Chrome Tab Capture instead of the ineffective WebRTC fallback.** For already-authorized installs, SSC initiates `getMediaStreamId()` synchronously from the slider/button gesture before awaiting offscreen setup. On first use it initiates capture immediately after the permission decision. This preserves Chrome's transient user activation.
+- **Ordinary-site success no longer masks capture failure.** YouTube and similar players can still respond through content-script fallback, while Meet's `srcObject` audio cannot. The corrected ordering restores the whole-tab path required by Meet, Zoom, and other VTC apps.
+
+## [0.2.9] - 2026-08-14
+
+### Fixed
+
+- **Google Meet now follows SSC mute and 0–100% levels on the captured output itself.** The offscreen `HTMLAudioElement` is authoritative for mute and attenuation (`muted` / `volume`); Web Audio gain is reserved for boosts above 100%. This directly covers the real-Chrome failures observed at 0%, 20%, and 23%.
+- **Removed redundant browser-tab muting during capture.** Chrome Tab Capture already suppresses normal source playback. Toggling `tabs.update({ muted: true })` could alter the captured WebRTC feed and is no longer part of SSC's single-output path.
+- **Stale capture state self-recovers.** Failed offscreen gain acknowledgements now propagate to the popup, which releases stale state and rebuilds capture from the same user gesture instead of silently reporting success.
+
+## [0.2.8] - 2026-08-14
+
+### Fixed
+
+- **Chrome Tab Capture works after Chrome 150/151 updates.** The offscreen audio host now declares both `USER_MEDIA` and `AUDIO_PLAYBACK`, matching Chrome's requirements for consuming a `tabCapture` stream with `getUserMedia`.
+- **Tab-capture stream IDs are consumed before they expire.** SSC creates and loads the offscreen document before requesting the one-use stream ID, removing document-startup latency from Chrome's short stream-ID lifetime.
+- **Captured gain remains active in long Meet and VTC sessions.** The processed stream now plays through an `HTMLAudioElement` backed by a `MediaStreamAudioDestinationNode`. This is SSC's sole output path and gives Chrome an explicit `AUDIO_PLAYBACK` lifecycle signal instead of relying on `AudioContext.destination` alone.
+
 ## [0.2.7] - 2026-06-25
 
 ### Changed

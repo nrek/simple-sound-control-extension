@@ -5,13 +5,26 @@
  * destination chain. Captures are keyed by `tabId`.
  */
 (() => {
+  const CAPTURE_LEVEL_POLICY = globalThis.SSCCaptureLevelPolicy;
   const MSG_START = "SSC_OFFSCREEN_START";
   const MSG_GAIN = "SSC_OFFSCREEN_GAIN";
   const MSG_STOP = "SSC_OFFSCREEN_STOP";
 
   /** @type {AudioContext | null} */
   let ctx = null;
-  /** @type {Map<number, { stream: MediaStream, source: MediaStreamAudioSourceNode, gain: GainNode }>} */
+  /**
+   * The HTMLAudioElement is the sole output for each processed stream. Using
+   * real media-element playback keeps Chrome's AUDIO_PLAYBACK offscreen
+   * lifetime active; a Web Audio destination alone is not reliable for that
+   * lifecycle signal in newer Chrome builds.
+   * @type {Map<number, {
+   *   stream: MediaStream,
+   *   source: MediaStreamAudioSourceNode,
+   *   gain: GainNode,
+   *   destination: MediaStreamAudioDestinationNode,
+   *   output: HTMLAudioElement
+   * }>}
+   */
   const captures = new Map();
 
   function ensureContext() {
@@ -20,10 +33,13 @@
     return ctx;
   }
 
-  function clampGain(percent) {
-    const g = Number(percent) / 100;
-    if (!Number.isFinite(g)) return 1;
-    return Math.max(0, Math.min(4, g));
+  function applyLevel(capture, percent) {
+    const level = CAPTURE_LEVEL_POLICY.resolveCaptureLevel(percent);
+    // Native media-element output is the most reliable attenuation/mute path
+    // for captured WebRTC audio. Web Audio gain is reserved for boosts.
+    capture.output.muted = level.muted;
+    capture.output.volume = level.outputVolume;
+    capture.gain.gain.value = level.gain;
   }
 
   async function startCapture(tabId, streamId, percent) {
@@ -54,16 +70,30 @@
     }
     const source = ac.createMediaStreamSource(stream);
     const gain = ac.createGain();
-    gain.gain.value = clampGain(percent);
+    const destination = ac.createMediaStreamDestination();
+    const output = new Audio();
     source.connect(gain);
-    gain.connect(ac.destination);
-    captures.set(tid, { stream, source, gain });
+    gain.connect(destination);
+    output.autoplay = true;
+    output.srcObject = destination.stream;
+    const capture = { stream, source, gain, destination, output };
+    applyLevel(capture, percent);
+    try {
+      await output.play();
+    } catch (err) {
+      source.disconnect();
+      gain.disconnect();
+      for (const track of stream.getTracks()) track.stop();
+      output.srcObject = null;
+      throw err;
+    }
+    captures.set(tid, capture);
   }
 
   function setGain(tabId, percent) {
     const cap = captures.get(Number(tabId));
     if (!cap) return false;
-    cap.gain.gain.value = clampGain(percent);
+    applyLevel(cap, percent);
     return true;
   }
 
@@ -78,6 +108,17 @@
     }
     try {
       cap.gain.disconnect();
+    } catch {
+      // ignore
+    }
+    try {
+      cap.output.pause();
+      cap.output.srcObject = null;
+    } catch {
+      // ignore
+    }
+    try {
+      cap.destination.disconnect();
     } catch {
       // ignore
     }

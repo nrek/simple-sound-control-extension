@@ -36,7 +36,11 @@ async function exists(p) {
  * document + its bootstrap). Firefox has no `chrome.offscreen` / `tabCapture`
  * API surface, so these get omitted from the Firefox dist entirely.
  */
-const FIREFOX_OMIT_FILES = new Set(["offscreen.html", "offscreen.js"]);
+const FIREFOX_OMIT_FILES = new Set([
+  "capture-level-policy.js",
+  "offscreen.html",
+  "offscreen.js",
+]);
 
 const PREPROCESS_EXTS = new Set([".js", ".mjs", ".cjs", ".html"]);
 

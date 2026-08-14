@@ -20,10 +20,18 @@
    */
   let HAS_TAB_CAPTURE = false;
   // SSC_FIREFOX_STRIP_BEGIN
-  HAS_TAB_CAPTURE =
-    typeof chrome !== "undefined" &&
-    Boolean(chrome.tabCapture?.getMediaStreamId) &&
-    Boolean(chrome.permissions?.request);
+  // Chrome may hide chrome.tabCapture until the optional permission is granted.
+  // Treat declared optional tabCapture+offscreen as sufficient to attempt capture.
+  HAS_TAB_CAPTURE = (() => {
+    if (typeof chrome === "undefined" || !chrome.permissions?.request) return false;
+    if (chrome.tabCapture?.getMediaStreamId) return true;
+    try {
+      const optional = chrome.runtime.getManifest()?.optional_permissions || [];
+      return optional.includes("tabCapture") && optional.includes("offscreen");
+    } catch {
+      return false;
+    }
+  })();
   // SSC_FIREFOX_STRIP_END
 
   const TAB_CAPTURE_PERMISSIONS = { permissions: ["tabCapture", "offscreen"] };
@@ -47,6 +55,7 @@
   const CONTENT_MSG_VOLUME = "SSC_SET_VOLUME";
   const MSG_RESOLVE_TAB = "SSC_RESOLVE_VOLUME_FOR_TAB";
   const MSG_REFRESH_TOOLBAR = "SSC_REFRESH_TOOLBAR";
+  const MSG_TAB_CAPTURE_PREPARE = "SSC_TAB_CAPTURE_PREPARE";
   const MSG_TAB_CAPTURE_ENGAGE = "SSC_TAB_CAPTURE_ENGAGE";
   const MSG_TAB_CAPTURE_GAIN = "SSC_TAB_CAPTURE_GAIN";
   const MSG_TAB_CAPTURE_RELEASE = "SSC_TAB_CAPTURE_RELEASE";
@@ -76,6 +85,8 @@
   let suppressQuickPresetClear = false;
   /** Whether Tab Capture is currently engaged for the active tab in this popup session. */
   let activeTabCaptured = false;
+  /** Cached so an already-authorized stream request can begin without an await. */
+  let tabCapturePermissionGranted = false;
   /** Resolved at init: { id, url, isHttpx } for the active tab, or null on chrome:// pages. */
   let activeTabInfo = null;
   let activeDomainOrigin = "";
@@ -279,9 +290,16 @@
 
   async function ensureTabCapturePermission() {
     if (!HAS_TAB_CAPTURE) return false;
+    if (tabCapturePermissionGranted) return true;
     try {
-      if (await chrome.permissions.contains(TAB_CAPTURE_PERMISSIONS)) return true;
-      return Boolean(await chrome.permissions.request(TAB_CAPTURE_PERMISSIONS));
+      if (await chrome.permissions.contains(TAB_CAPTURE_PERMISSIONS)) {
+        tabCapturePermissionGranted = true;
+        return true;
+      }
+      tabCapturePermissionGranted = Boolean(
+        await chrome.permissions.request(TAB_CAPTURE_PERMISSIONS)
+      );
+      return tabCapturePermissionGranted;
     } catch {
       return false;
     }
@@ -302,21 +320,38 @@
     if (!HAS_TAB_CAPTURE || tabId == null) return false;
     if (activeTabCaptured) {
       const r = await bgSend({ type: MSG_TAB_CAPTURE_GAIN, tabId, percent });
-      return Boolean(r?.ok);
+      if (r?.ok) return true;
+      // The service worker and offscreen host can outlive one another. Clear
+      // stale state and rebuild capture immediately from this same gesture.
+      await bgSend({ type: MSG_TAB_CAPTURE_RELEASE, tabId });
+      activeTabCaptured = false;
     }
-    const permitted = await ensureTabCapturePermission();
-    if (!permitted) return false;
-    let streamId;
+    let streamIdPromise;
     // SSC_FIREFOX_STRIP_BEGIN
+    if (tabCapturePermissionGranted) {
+      // Initiate synchronously while the slider/button gesture is still live.
+      if (!chrome.tabCapture?.getMediaStreamId) return false;
+      streamIdPromise = chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
+    } else {
+      const permitted = await ensureTabCapturePermission();
+      if (!permitted) return false;
+      if (!chrome.tabCapture?.getMediaStreamId) return false;
+      // Permission approval is itself user-mediated. Start capture immediately;
+      // do not insert offscreen/document awaits before this API call.
+      streamIdPromise = chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
+    }
+    // SSC_FIREFOX_STRIP_ELSE
+    streamIdPromise = Promise.resolve("");
+    // SSC_FIREFOX_STRIP_END
+    let streamId;
     try {
-      streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
+      streamId = await streamIdPromise;
     } catch {
       return false;
     }
-    // SSC_FIREFOX_STRIP_ELSE
-    streamId = "";
-    // SSC_FIREFOX_STRIP_END
     if (!streamId) return false;
+    const prepared = await bgSend({ type: MSG_TAB_CAPTURE_PREPARE });
+    if (!prepared?.ok) return false;
     const r = await bgSend({
       type: MSG_TAB_CAPTURE_ENGAGE,
       tabId,
@@ -577,6 +612,15 @@
   }
 
   (async function init() {
+    if (HAS_TAB_CAPTURE) {
+      try {
+        tabCapturePermissionGranted = Boolean(
+          await chrome.permissions.contains(TAB_CAPTURE_PERMISSIONS)
+        );
+      } catch {
+        tabCapturePermissionGranted = false;
+      }
+    }
     const data = await storageGet([
       STORAGE_KEYS.theme,
       STORAGE_KEYS.accent,

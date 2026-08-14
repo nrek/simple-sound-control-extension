@@ -5,6 +5,7 @@ const STORAGE_KEY_LIVE = "ssc_live_tab_volume";
 const MSG_RESOLVE_FRAME = "SSC_RESOLVE_VOLUME";
 const MSG_RESOLVE_TAB = "SSC_RESOLVE_VOLUME_FOR_TAB";
 const MSG_REFRESH_TOOLBAR = "SSC_REFRESH_TOOLBAR";
+const MSG_TAB_CAPTURE_PREPARE = "SSC_TAB_CAPTURE_PREPARE";
 const MSG_TAB_CAPTURE_ENGAGE = "SSC_TAB_CAPTURE_ENGAGE";
 const MSG_TAB_CAPTURE_GAIN = "SSC_TAB_CAPTURE_GAIN";
 const MSG_TAB_CAPTURE_RELEASE = "SSC_TAB_CAPTURE_RELEASE";
@@ -16,15 +17,15 @@ const MSG_OFFSCREEN_STOP = "SSC_OFFSCREEN_STOP";
 const MSG_PASSTHROUGH_MODE = "SSC_PASSTHROUGH_MODE";
 
 const OFFSCREEN_PATH = "offscreen.html";
-const OFFSCREEN_REASONS = ["AUDIO_PLAYBACK"];
+const OFFSCREEN_REASONS = ["USER_MEDIA", "AUDIO_PLAYBACK"];
 const OFFSCREEN_JUSTIFICATION =
-  "Apply per-tab volume gain to captured tab audio (Tab Capture mode).";
+  "Capture active-tab audio and play it through a per-tab volume gain control.";
 
 /**
  * In-memory record of every tab currently routed through Tab Capture mode.
- * Keys are tabIds. Values include the user's pre-capture mute state so we can
- * restore it cleanly on release without trampling a manual user mute.
- * @type {Map<number, { wasMuted: boolean, percent: number }>}
+ * Tab Capture suppresses the source tab's normal playback; SSC must not also
+ * toggle the browser tab's mute state because that can alter the captured feed.
+ * @type {Map<number, { percent: number }>}
  */
 const capturedTabs = new Map();
 
@@ -338,8 +339,7 @@ function pruneClosedTab(tabId) {
 chrome.tabs.onRemoved.addListener((tabId) => {
   pruneClosedTab(tabId);
   lastOriginByTab.delete(Number(tabId));
-  // The tab is gone, so no source-tab unmute needed; just clear our state and
-  // the offscreen chain.
+  // The tab is gone; clear our state and the offscreen chain.
   if (capturedTabs.has(Number(tabId))) {
     capturedTabs.delete(Number(tabId));
     void sendOffscreenStop(tabId).then(() => {
@@ -487,36 +487,6 @@ async function notifyContentScript(tabId, enabled) {
 }
 
 /**
- * Mute the source tab so the user only hears the gain-modified copy coming
- * out of the offscreen AudioContext (avoid double playback). Snapshots the
- * tab's prior mute state so {@link releaseCapture} can restore it.
- */
-async function muteSourceTab(tabId) {
-  let wasMuted = false;
-  try {
-    const tab = await chrome.tabs.get(Number(tabId));
-    wasMuted = Boolean(tab?.mutedInfo?.muted);
-  } catch {
-    // ignore
-  }
-  try {
-    await chrome.tabs.update(Number(tabId), { muted: true });
-  } catch {
-    // ignore
-  }
-  return wasMuted;
-}
-
-async function restoreSourceTabMute(tabId, wasMuted) {
-  if (wasMuted) return;
-  try {
-    await chrome.tabs.update(Number(tabId), { muted: false });
-  } catch {
-    // ignore
-  }
-}
-
-/**
  * Engage Tab Capture for `tabId` with the supplied media stream id (which
  * must have been freshly minted from a popup user gesture). Idempotent —
  * if the tab is already captured, just updates the gain.
@@ -527,9 +497,12 @@ async function engageCapture(tabId, streamId, percent) {
 
   const existing = capturedTabs.get(tid);
   if (existing) {
+    const gainResp = await sendOffscreenGain(tid, percent);
+    if (!gainResp?.ok) {
+      return { ok: false, error: gainResp?.error || "offscreen gain failed" };
+    }
     existing.percent = Number(percent);
     capturedTabs.set(tid, existing);
-    await sendOffscreenGain(tid, percent);
     return { ok: true, alreadyCaptured: true };
   }
 
@@ -543,8 +516,7 @@ async function engageCapture(tabId, streamId, percent) {
     return { ok: false, error: startResp?.error || "offscreen start failed" };
   }
 
-  const wasMuted = await muteSourceTab(tid);
-  capturedTabs.set(tid, { wasMuted, percent: Number(percent) });
+  capturedTabs.set(tid, { percent: Number(percent) });
   void notifyContentScript(tid, true);
   return { ok: true };
 }
@@ -555,9 +527,12 @@ async function setCaptureGain(tabId, percent) {
   if (!rec) {
     return { ok: false, error: "not captured" };
   }
+  const gainResp = await sendOffscreenGain(tid, percent);
+  if (!gainResp?.ok) {
+    return { ok: false, error: gainResp?.error || "offscreen gain failed" };
+  }
   rec.percent = Number(percent);
   capturedTabs.set(tid, rec);
-  await sendOffscreenGain(tid, percent);
   return { ok: true };
 }
 
@@ -569,7 +544,6 @@ async function releaseCapture(tabId) {
   }
   capturedTabs.delete(tid);
   await sendOffscreenStop(tid);
-  await restoreSourceTabMute(tid, rec.wasMuted);
   void notifyContentScript(tid, false);
   await maybeCloseOffscreen();
   return { ok: true, wasCaptured: true };
@@ -736,6 +710,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     resolveVolumeFromStorage(tabId, origin, (volume) => {
       sendResponse({ volume });
+    });
+    return true;
+  }
+
+  if (msg?.type === MSG_TAB_CAPTURE_PREPARE) {
+    ensureOffscreen().then((ready) => {
+      sendResponse({
+        ok: ready,
+        error: ready ? undefined : "offscreen unavailable",
+      });
     });
     return true;
   }
