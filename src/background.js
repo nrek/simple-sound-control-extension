@@ -14,6 +14,7 @@ const MSG_TAB_CAPTURE_QUERY = "SSC_TAB_CAPTURE_QUERY";
 const MSG_OFFSCREEN_START = "SSC_OFFSCREEN_START";
 const MSG_OFFSCREEN_GAIN = "SSC_OFFSCREEN_GAIN";
 const MSG_OFFSCREEN_STOP = "SSC_OFFSCREEN_STOP";
+const MSG_OFFSCREEN_QUERY = "SSC_OFFSCREEN_QUERY";
 const MSG_PASSTHROUGH_MODE = "SSC_PASSTHROUGH_MODE";
 
 const OFFSCREEN_PATH = "offscreen.html";
@@ -475,6 +476,17 @@ async function sendOffscreenStop(tabId) {
   }
 }
 
+async function sendOffscreenQuery(tabId) {
+  try {
+    return await chrome.runtime.sendMessage({
+      type: MSG_OFFSCREEN_QUERY,
+      tabId: Number(tabId),
+    });
+  } catch {
+    return { ok: false, captured: false };
+  }
+}
+
 async function notifyContentScript(tabId, enabled) {
   try {
     await chrome.tabs.sendMessage(Number(tabId), {
@@ -484,6 +496,30 @@ async function notifyContentScript(tabId, enabled) {
   } catch {
     // Content script may not be present (chrome:// page, etc.); harmless.
   }
+}
+
+/**
+ * Recover capture bookkeeping after Chrome suspends/restarts the MV3 service
+ * worker. The offscreen document owns the live MediaStream and can outlive
+ * this module's in-memory `capturedTabs` map.
+ */
+async function syncCaptureFromOffscreen(tabId) {
+  const tid = Number(tabId);
+  if (Number.isNaN(tid)) return null;
+
+  const state = await sendOffscreenQuery(tid);
+  if (state?.ok && state.captured) {
+    const percent = clampVolume(Number(state.percent)) ?? 100;
+    const rec = { percent };
+    capturedTabs.set(tid, rec);
+    void notifyContentScript(tid, true);
+    return rec;
+  }
+
+  if (capturedTabs.delete(tid)) {
+    void notifyContentScript(tid, false);
+  }
+  return null;
 }
 
 /**
@@ -523,7 +559,7 @@ async function engageCapture(tabId, streamId, percent) {
 
 async function setCaptureGain(tabId, percent) {
   const tid = Number(tabId);
-  const rec = capturedTabs.get(tid);
+  const rec = capturedTabs.get(tid) || (await syncCaptureFromOffscreen(tid));
   if (!rec) {
     return { ok: false, error: "not captured" };
   }
@@ -668,6 +704,26 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   }
 });
 
+// SSC_FIREFOX_STRIP_BEGIN
+if (chrome.tabCapture?.onStatusChanged) {
+  chrome.tabCapture.onStatusChanged.addListener((info) => {
+    if (!info || (info.status !== "stopped" && info.status !== "error")) return;
+    const tid = Number(info.tabId);
+    if (Number.isNaN(tid)) return;
+    capturedTabs.delete(tid);
+    void notifyContentScript(tid, false);
+    void chrome.tabCapture
+      .getCapturedTabs()
+      .then((active) => {
+        if (!Array.isArray(active) || active.length === 0) {
+          void maybeCloseOffscreen();
+        }
+      })
+      .catch(() => {});
+  });
+}
+// SSC_FIREFOX_STRIP_END
+
 chrome.windows.onFocusChanged.addListener((windowId) => {
   if (windowId === chrome.windows.WINDOW_ID_NONE) return;
   scheduleToolbarRefresh();
@@ -746,13 +802,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg?.type === MSG_TAB_CAPTURE_QUERY) {
     const tid = Number(msg.tabId);
-    const rec = capturedTabs.get(tid);
-    sendResponse({
-      ok: true,
-      captured: Boolean(rec),
-      percent: rec?.percent,
+    const known = capturedTabs.get(tid);
+    (known ? Promise.resolve(known) : syncCaptureFromOffscreen(tid)).then((rec) => {
+      sendResponse({
+        ok: true,
+        captured: Boolean(rec),
+        percent: rec?.percent,
+      });
     });
-    return false;
+    return true;
   }
 
   return false;

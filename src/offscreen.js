@@ -9,6 +9,7 @@
   const MSG_START = "SSC_OFFSCREEN_START";
   const MSG_GAIN = "SSC_OFFSCREEN_GAIN";
   const MSG_STOP = "SSC_OFFSCREEN_STOP";
+  const MSG_QUERY = "SSC_OFFSCREEN_QUERY";
 
   /** @type {AudioContext | null} */
   let ctx = null;
@@ -22,7 +23,8 @@
    *   source: MediaStreamAudioSourceNode,
    *   gain: GainNode,
    *   destination: MediaStreamAudioDestinationNode,
-   *   output: HTMLAudioElement
+   *   output: HTMLAudioElement,
+   *   percent: number
    * }>}
    */
   const captures = new Map();
@@ -40,6 +42,23 @@
     capture.output.muted = level.muted;
     capture.output.volume = level.outputVolume;
     capture.gain.gain.value = level.gain;
+    const numericPercent = Number(percent);
+    capture.percent = Number.isFinite(numericPercent)
+      ? Math.max(0, Math.min(400, Math.round(numericPercent)))
+      : 100;
+  }
+
+  async function ensurePlayback(capture) {
+    if (ctx?.state === "suspended") {
+      try {
+        await ctx.resume();
+      } catch {
+        // A later user gesture can retry.
+      }
+    }
+    if (capture.output.paused) {
+      await capture.output.play();
+    }
   }
 
   async function startCapture(tabId, streamId, percent) {
@@ -48,7 +67,7 @@
       throw new Error("invalid tabId or streamId");
     }
     if (captures.has(tid)) {
-      setGain(tid, percent);
+      await setGain(tid, percent);
       return;
     }
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -61,13 +80,6 @@
       video: false,
     });
     const ac = ensureContext();
-    if (ac.state === "suspended") {
-      try {
-        await ac.resume();
-      } catch {
-        // ignore
-      }
-    }
     const source = ac.createMediaStreamSource(stream);
     const gain = ac.createGain();
     const destination = ac.createMediaStreamDestination();
@@ -76,10 +88,10 @@
     gain.connect(destination);
     output.autoplay = true;
     output.srcObject = destination.stream;
-    const capture = { stream, source, gain, destination, output };
+    const capture = { stream, source, gain, destination, output, percent: 100 };
     applyLevel(capture, percent);
     try {
-      await output.play();
+      await ensurePlayback(capture);
     } catch (err) {
       source.disconnect();
       gain.disconnect();
@@ -90,11 +102,27 @@
     captures.set(tid, capture);
   }
 
-  function setGain(tabId, percent) {
+  async function setGain(tabId, percent) {
     const cap = captures.get(Number(tabId));
     if (!cap) return false;
     applyLevel(cap, percent);
+    await ensurePlayback(cap);
     return true;
+  }
+
+  function queryCapture(tabId) {
+    const cap = captures.get(Number(tabId));
+    if (!cap) {
+      return { ok: true, captured: false };
+    }
+    return {
+      ok: true,
+      captured: true,
+      percent: cap.percent,
+      contextState: ctx?.state || "closed",
+      outputPaused: cap.output.paused,
+      trackStates: cap.stream.getAudioTracks().map((track) => track.readyState),
+    };
   }
 
   function stopCapture(tabId) {
@@ -146,13 +174,23 @@
       return true;
     }
     if (msg?.type === MSG_GAIN) {
-      const ok = setGain(msg.tabId, msg.percent);
-      sendResponse({ ok });
-      return false;
+      (async () => {
+        try {
+          const ok = await setGain(msg.tabId, msg.percent);
+          sendResponse({ ok });
+        } catch (err) {
+          sendResponse({ ok: false, error: String(err?.message || err) });
+        }
+      })();
+      return true;
     }
     if (msg?.type === MSG_STOP) {
       const ok = stopCapture(msg.tabId);
       sendResponse({ ok, remaining: captures.size });
+      return false;
+    }
+    if (msg?.type === MSG_QUERY) {
+      sendResponse(queryCapture(msg.tabId));
       return false;
     }
     return false;

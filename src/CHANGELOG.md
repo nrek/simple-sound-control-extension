@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.15] - 2026-09-18
+
+### Fixed
+
+- **SSC gain remains controllable after switching away from Chrome and returning.** Chrome can restart the Manifest V3 service worker while the offscreen document continues playing the captured tab at its previous level. The worker now queries the offscreen capture owner and rebuilds its volatile per-tab map instead of requesting a duplicate capture that Chrome rejects.
+- **Capture state follows Chrome lifecycle events.** Terminal `tabCapture` states clear stale worker bookkeeping, while active offscreen capture state restores content-script passthrough after a worker restart.
+- **Suspended offscreen playback recovers on the next gain update.** Gain changes resume the shared `AudioContext` and replay a paused output element when Chrome has suspended either one.
+
 ## [0.2.14] - 2026-08-14
 
 ### Changed

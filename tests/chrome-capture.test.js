@@ -38,7 +38,8 @@ test("offscreen capture uses media-element playback as its sole output", () => {
   const offscreen = src("offscreen.js");
   assert.match(offscreen, /createMediaStreamDestination\(\)/);
   assert.match(offscreen, /output\.srcObject\s*=\s*destination\.stream/);
-  assert.match(offscreen, /await output\.play\(\)/);
+  assert.match(offscreen, /await ensurePlayback\(capture\)/);
+  assert.match(offscreen, /await capture\.output\.play\(\)/);
   assert.doesNotMatch(offscreen, /gain\.connect\(ac\.destination\)/);
 });
 
@@ -73,4 +74,40 @@ test("captured output applies mute, attenuation, neutral, and boost levels", () 
 test("background does not mute the source tab separately from tab capture", () => {
   const background = src("background.js");
   assert.doesNotMatch(background, /chrome\.tabs\.update\([^)]*\{\s*muted:/);
+});
+
+test("service-worker capture state rehydrates from the offscreen owner", () => {
+  const background = src("background.js");
+  const offscreen = src("offscreen.js");
+
+  assert.match(background, /MSG_OFFSCREEN_QUERY\s*=\s*"SSC_OFFSCREEN_QUERY"/);
+  assert.match(background, /async function syncCaptureFromOffscreen\(tabId\)/);
+  assert.match(
+    background,
+    /capturedTabs\.get\(tid\)\s*\|\|\s*\(await syncCaptureFromOffscreen\(tid\)\)/
+  );
+  assert.match(
+    background,
+    /known\s*\?\s*Promise\.resolve\(known\)\s*:\s*syncCaptureFromOffscreen\(tid\)/
+  );
+
+  assert.match(offscreen, /MSG_QUERY\s*=\s*"SSC_OFFSCREEN_QUERY"/);
+  assert.match(offscreen, /function queryCapture\(tabId\)/);
+  assert.match(offscreen, /captured:\s*true,\s*\n\s*percent:\s*cap\.percent/);
+});
+
+test("Chrome capture terminal states clear volatile worker bookkeeping", () => {
+  const background = src("background.js");
+  assert.match(background, /chrome\.tabCapture\?\.onStatusChanged/);
+  assert.match(background, /info\.status\s*!==\s*"stopped"/);
+  assert.match(background, /info\.status\s*!==\s*"error"/);
+  assert.match(background, /chrome\.tabCapture\s*\n\s*\.getCapturedTabs\(\)/);
+});
+
+test("gain updates resume suspended offscreen playback", () => {
+  const offscreen = src("offscreen.js");
+  assert.match(offscreen, /async function ensurePlayback\(capture\)/);
+  assert.match(offscreen, /await ctx\.resume\(\)/);
+  assert.match(offscreen, /await capture\.output\.play\(\)/);
+  assert.match(offscreen, /await ensurePlayback\(cap\)/);
 });
